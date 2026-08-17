@@ -13,6 +13,7 @@ import {
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import os from "node:os";
+import { sleep } from "./utils.js";
 import { join, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import type { Dirent } from "node:fs";
@@ -65,10 +66,6 @@ export function detectArch(): string {
     default:
       return os.arch().toLowerCase();
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fetchText(url: string): Promise<string> {

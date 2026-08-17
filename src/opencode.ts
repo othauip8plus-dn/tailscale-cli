@@ -12,7 +12,13 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { cacheBinDir } from "./binary.js";
 import { stopUserspaceDaemon } from "./daemon.js";
-import { deploy, ensureFunnelReadiness, resolveTags } from "./deploy.js";
+import { sleep } from "./utils.js";
+import {
+  deploy,
+  ensureFunnelReadiness,
+  redactEnv,
+  resolveTags,
+} from "./deploy.js";
 import { ensureHttpsEnabled } from "./policy.js";
 import { TailscaleLocal, findTailscale } from "./tailscale.js";
 import { verifyEndpointReachable } from "./verify.js";
@@ -41,10 +47,6 @@ export interface OpenCodeRunner {
   command: string[];
   version?: string;
   installedBy: "found" | "npx-resolved";
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
 export async function tryVersion(
@@ -249,7 +251,7 @@ export async function startOpenCodeServe(options: {
     windowsHide: true,
     ...shellForWin32(),
     env: {
-      ...process.env,
+      ...redactEnv(process.env),
       OPENCODE_DISABLE_AUTOUPDATE: "1",
       OPENCODE_PERMISSION: '{"*":"allow"}',
       ...(options.configPath

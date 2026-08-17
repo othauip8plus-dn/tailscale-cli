@@ -145,12 +145,14 @@ function deviceFromStatus(status: unknown): Device | Record<string, unknown> {
   return device;
 }
 
-function redactEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function redactEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const copy = { ...env };
   delete copy.TS_API_KEY;
   delete copy.TS_ACCESS_TOKEN;
+  delete copy.TS_API_TOKEN;
   delete copy.TS_CLIENT_SECRET;
   delete copy.TS_OAUTH_CLIENT_SECRET;
+  delete copy.TS_OAUTH_CLIENT_ID;
   delete copy.TS_AUTH_KEY;
   return copy;
 }

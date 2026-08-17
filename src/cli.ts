@@ -1,8 +1,5 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { apiCredentialHint, ApiError, TailscaleApiClient } from "./api.js";
 import { cleanup } from "./cleanup.js";
@@ -49,19 +46,7 @@ import type { ResolvedConfig } from "./types.js";
 import { confirm, promptCredential } from "./interactive.js";
 import { verifyEndpointReachable } from "./verify.js";
 import type { Envelope } from "./types.js";
-
-function packageVersion(): string {
-  try {
-    const here = fileURLToPath(new URL(".", import.meta.url));
-    const pkg = JSON.parse(
-      readFileSync(resolvePath(here, "..", "package.json"), "utf8"),
-    ) as { version?: string };
-    if (pkg.version) return pkg.version;
-  } catch {
-    // Fall through to a safe default when package.json is not reachable.
-  }
-  return "0.0.0";
-}
+import { packageVersion, sleep } from "./utils.js";
 
 const program = new Command();
 program
@@ -861,10 +846,6 @@ program
     },
   );
 
-function sleepMs(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function funnelDnsName(
   local: TailscaleLocal,
 ): Promise<string | undefined> {
@@ -925,7 +906,7 @@ async function funnelPublicDnsPropagated(
     } catch {
       // no getent or hostname not resolvable yet.
     }
-    await sleepMs(10_000);
+    await sleep(10_000);
   }
   return { ok: false, attempts };
 }
@@ -1046,9 +1027,14 @@ program
         ? Number(options.verifyTimeout)
         : 120;
       if (options.tcp) {
-        const [publicPort, localPort] = options.tcp
-          .replace(/\s/g, "")
-          .split(":");
+        const tcpValue = options.tcp.replace(/\s/g, "");
+        const lastColon = tcpValue.lastIndexOf(":");
+        if (lastColon < 0)
+          throw new Error(
+            "FUNNEL_TCP_INVALID: --tcp expects public:local, e.g. 10000:5432",
+          );
+        const publicPort = tcpValue.slice(0, lastColon);
+        const localPort = tcpValue.slice(lastColon + 1);
         if (!publicPort || !localPort)
           throw new Error(
             "FUNNEL_TCP_INVALID: --tcp expects public:local, e.g. 10000:5432",
@@ -1188,7 +1174,7 @@ program
             break;
           } catch (retryError) {
             if (attempt === 3) throw retryError;
-            await sleepMs(3000);
+            await sleep(3000);
           }
         }
       }

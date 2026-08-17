@@ -1,8 +1,5 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { loadConfigFile, resolveConfig } from "./core.js";
 import {
@@ -10,24 +7,11 @@ import {
   runOpenCodeFlow,
   stopOpenCodeFlow,
 } from "./opencode.js";
-import { cacheBinDir } from "./binary.js";
 import type { Envelope } from "./types.js";
+import { packageVersion } from "./utils.js";
 
 const DOCS_BASE =
   "https://github.com/ongtrieuphuchieu689-7u/tailscale-cli/blob/main/docs";
-
-function packageVersion(): string {
-  try {
-    const here = fileURLToPath(new URL(".", import.meta.url));
-    const pkg = JSON.parse(
-      readFileSync(resolvePath(here, "..", "package.json"), "utf8"),
-    ) as { version?: string };
-    if (pkg.version) return pkg.version;
-  } catch {
-    // Fall through to a safe default when package.json is not reachable.
-  }
-  return "0.0.0";
-}
 
 const program = new Command();
 program
@@ -149,7 +133,7 @@ function fail(
     },
   };
   if (program.opts<{ json?: boolean }>().json)
-    console.log(JSON.stringify(envelope, null, 2));
+    console.error(JSON.stringify(envelope, null, 2));
   else console.error(`ERROR ${code}: ${message}`);
   process.exitCode = funnelCodes.includes(code) ? 7 : 1;
   return undefined as never;
@@ -255,7 +239,7 @@ program.action(
         start,
       );
       const urlsOut = result.urls.length
-        ? result.urls.map((url) => `OPencode URL: ${url}`).join("\n")
+        ? result.urls.map((url) => `OpenCode URL: ${url}`).join("\n")
         : undefined;
       // --json must keep stdout pure JSON; human-readable URLs go to stderr.
       if (program.opts<{ json?: boolean }>().json) {

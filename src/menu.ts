@@ -134,10 +134,11 @@ export async function interactiveMenu(): Promise<string[]> {
     case "doctor":
       return ["doctor", "--detect-credentials"];
     case "cleanup": {
-      await confirm({
+      const dryRun = await confirm({
         message: "Dry-run the cleanup candidates first?",
         default: true,
       });
+      if (dryRun) return ["cleanup", "--dry-run"];
       const yes = await confirm({
         message: "Actually remove matching offline devices (--yes)?",
         default: false,

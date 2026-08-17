@@ -129,7 +129,9 @@ export function loadConfigFile(
     try {
       const raw = readFileSync(candidate, "utf8");
       const cleaned = raw
-        .replace(/\/\/[^\n]*/g, "")
+        .replace(/"(?:[^"\\]|\\.)*"|\/\/[^\n]*/g, (match) =>
+          match.startsWith('"') ? match : "",
+        )
         .replace(/,\s*([\]}])/g, "$1");
       const parsed = JSON.parse(cleaned) as ConfigFile;
       return { config: parsed, source: candidate };

@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { cacheBinDir, cacheBinaryVersion } from "./binary.js";
+import { sleep } from "./utils.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -39,10 +40,6 @@ async function trySystemctl(args: string[]): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function inspectDaemon(): Promise<DaemonState> {
