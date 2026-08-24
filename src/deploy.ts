@@ -57,6 +57,46 @@ export function resolveKeyExpiryPlan(
   return { seconds, warnings };
 }
 
+const FUNNEL_ATTR_ERROR = /funnel.*(not available|node attribute not set)/i;
+
+/**
+ * Runs `funnel`, tolerating the window where the funnel node attribute was
+ * just provisioned but policy has not propagated yet: matching failures are
+ * retried a few times. Exhausted retries throw FUNNEL_ATTR_REQUIRED for
+ * propagation errors and re-raise any other final failure verbatim.
+ */
+export async function runFunnelWithAttrRetry(
+  runFunnel: () => Promise<void>,
+  options: { retryDelayMs?: number; attempts?: number } = {},
+): Promise<void> {
+  const delayMs = options.retryDelayMs ?? 3000;
+  const attempts = options.attempts ?? 4;
+  try {
+    await runFunnel();
+    return;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!FUNNEL_ATTR_ERROR.test(message)) throw error;
+    let lastError: unknown = error;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        await runFunnel();
+        return;
+      } catch (retryError) {
+        lastError = retryError;
+      }
+    }
+    const retryMessage =
+      lastError instanceof Error ? lastError.message : String(lastError);
+    if (FUNNEL_ATTR_ERROR.test(retryMessage))
+      throw new Error(
+        `FUNNEL_ATTR_REQUIRED: the funnel node attribute was provisioned but is not effective yet; Tailscale policy propagation can take ~30s. ${retryMessage}`,
+      );
+    throw lastError;
+  }
+}
+
 function truthy(value: string | undefined): boolean {
   return (
     value !== undefined &&
@@ -493,26 +533,9 @@ export async function deploy(
       await local.serve([...cmdArgs, exposure.target]);
       return;
     }
-    try {
-      await local.funnel([...cmdArgs, exposure.target]);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!/funnel.*(not available|node attribute not set)/i.test(message))
-        throw error;
-      let lastError = error;
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        try {
-          await new Promise((resolve) => setTimeout(resolve, 3000));
-          await local.funnel([...cmdArgs, exposure.target]);
-          return;
-        } catch (retryError) {
-          lastError = retryError;
-        }
-      }
-      throw new Error(
-        `FUNNEL_ATTR_REQUIRED: the funnel node attribute was provisioned but is not effective yet; Tailscale policy propagation can take ~30s. ${lastError instanceof Error ? lastError.message : String(lastError)}`,
-      );
-    }
+    await runFunnelWithAttrRetry(() =>
+      local.funnel([...cmdArgs, exposure.target]),
+    );
   };
 
   for (const exposure of exposures) await runExposure(exposure);

@@ -247,11 +247,14 @@ export class TailscaleApiClient {
               headers: response.headers,
               status: response.status,
             };
+          // Only parse real JSON responses; "application/hujson" also
+          // contains "json" but must stay raw text so HuJSON comments
+          // survive for policy-preserving writes.
           const contentType = response.headers.get("content-type") ?? "";
+          const isJson =
+            /json/.test(contentType) && !/hujson/.test(contentType);
           return {
-            data: contentType.includes("json")
-              ? parseHuJson<T>(text)
-              : (text as T),
+            data: isJson ? parseHuJson<T>(text) : (text as T),
             headers: response.headers,
             status: response.status,
           };

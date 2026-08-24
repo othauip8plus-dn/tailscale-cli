@@ -10,6 +10,7 @@ import {
   ensureFunnelReadiness,
   resolveTags,
   currentUsername,
+  runFunnelWithAttrRetry,
 } from "../src/deploy.js";
 import { funnelCovered } from "../src/policy.js";
 import type { ResolvedConfig } from "../src/types.js";
@@ -272,6 +273,57 @@ describe("exposure parsing", () => {
 
   it("marks funnel exposures as public", () => {
     expect(resolveExposures(["3000"], true)[0]?.public).toBe(true);
+  });
+});
+
+describe("runFunnelWithAttrRetry (funnel propagation retry)", () => {
+  const matchingError = () =>
+    new Error(
+      'funnel is not available on this node because "funnel" node attribute is not set',
+    );
+
+  it("does not retry when funnel succeeds immediately", async () => {
+    const run = vi.fn(async () => {});
+    await runFunnelWithAttrRetry(run, { retryDelayMs: 0 });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a matching failure until funnel succeeds", async () => {
+    const run = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(matchingError())
+      .mockResolvedValueOnce();
+    await runFunnelWithAttrRetry(run, { retryDelayMs: 0 });
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws FUNNEL_ATTR_REQUIRED when every retry fails with a matching error", async () => {
+    const run = vi.fn(async () => {
+      throw matchingError();
+    });
+    await expect(
+      runFunnelWithAttrRetry(run, { retryDelayMs: 0, attempts: 2 }),
+    ).rejects.toThrow("FUNNEL_ATTR_REQUIRED");
+    expect(run).toHaveBeenCalledTimes(3);
+  });
+
+  it("rethrows a non-matching final retry failure verbatim instead of swallowing it", async () => {
+    const run = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(matchingError())
+      .mockRejectedValue(new Error("EACCES: permission denied"));
+    await expect(
+      runFunnelWithAttrRetry(run, { retryDelayMs: 0 }),
+    ).rejects.toThrow(/^EACCES: permission denied$/);
+    expect(run).toHaveBeenCalledTimes(5);
+  });
+
+  it("rethrows non-propagation failures immediately without retrying", async () => {
+    const run = vi.fn(async () => {
+      throw new Error("port 443 already in use");
+    });
+    await expect(runFunnelWithAttrRetry(run)).rejects.toThrow("already in use");
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -72,6 +72,48 @@ describe("sanitizeServerText", () => {
   });
 });
 
+describe("HuJSON responses stay raw text", () => {
+  it("getPolicyHuJson preserves comments when the server answers application/hujson", async () => {
+    const raw = `{
+  // allow everyone to reach tag:web
+  "grants": [],
+}`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(raw, {
+            status: 200,
+            headers: { "content-type": "application/hujson", etag: '"e1"' },
+          }),
+      ),
+    );
+    const client = new TailscaleApiClient(testConfig, {
+      TS_API_KEY: "tskey-api-key-value",
+    });
+    const snapshot = await client.getPolicyHuJson();
+    expect(snapshot.content).toBe(raw);
+  });
+
+  it("getPolicy still parses real JSON responses", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ acls: [] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+      ),
+    );
+    const client = new TailscaleApiClient(testConfig, {
+      TS_API_KEY: "tskey-api-key-value",
+    });
+    const snapshot = await client.getPolicy();
+    expect(snapshot.json).toEqual({ acls: [] });
+  });
+});
+
 describe("MagicDNS preferences contract", () => {
   it("posts the camelCase magicDNS field and verifies read-after-write", async () => {
     const requests: { url: string; method: string; body?: string }[] = [];
