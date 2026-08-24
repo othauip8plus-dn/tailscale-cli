@@ -301,9 +301,15 @@ describe("runFunnelWithAttrRetry (funnel propagation retry)", () => {
     const run = vi.fn(async () => {
       throw matchingError();
     });
-    await expect(
-      runFunnelWithAttrRetry(run, { retryDelayMs: 0, attempts: 2 }),
-    ).rejects.toThrow("FUNNEL_ATTR_REQUIRED");
+    const pending = runFunnelWithAttrRetry(run, {
+      retryDelayMs: 0,
+      attempts: 2,
+    });
+    await expect(pending).rejects.toThrow("FUNNEL_ATTR_REQUIRED");
+    const error = (await pending.catch((caught) => caught)) as {
+      cause?: unknown;
+    };
+    expect(error.cause).toBeInstanceOf(Error);
     expect(run).toHaveBeenCalledTimes(3);
   });
 

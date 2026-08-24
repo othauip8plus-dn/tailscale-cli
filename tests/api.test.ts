@@ -112,6 +112,29 @@ describe("HuJSON responses stay raw text", () => {
     const snapshot = await client.getPolicy();
     expect(snapshot.json).toEqual({ acls: [] });
   });
+
+  it("getPolicy parses a hujson body even when JSON was requested", async () => {
+    const raw = `{
+  // allow everyone to reach tag:web
+  "grants": [],
+}`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(raw, {
+            status: 200,
+            headers: { "content-type": "application/hujson" },
+          }),
+      ),
+    );
+    const client = new TailscaleApiClient(testConfig, {
+      TS_API_KEY: "tskey-api-key-value",
+    });
+    const snapshot = await client.getPolicy();
+    expect(snapshot.json).toEqual({ grants: [] });
+    expect(JSON.parse(snapshot.content)).toEqual({ grants: [] });
+  });
 });
 
 describe("MagicDNS preferences contract", () => {

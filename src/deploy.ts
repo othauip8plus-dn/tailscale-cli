@@ -61,9 +61,10 @@ const FUNNEL_ATTR_ERROR = /funnel.*(not available|node attribute not set)/i;
 
 /**
  * Runs `funnel`, tolerating the window where the funnel node attribute was
- * just provisioned but policy has not propagated yet: matching failures are
- * retried a few times. Exhausted retries throw FUNNEL_ATTR_REQUIRED for
- * propagation errors and re-raise any other final failure verbatim.
+ * just provisioned but policy has not propagated yet: once a propagation
+ * failure is seen, every remaining attempt is retried and only the final
+ * error is classified — a propagation error becomes FUNNEL_ATTR_REQUIRED,
+ * anything else is re-raised verbatim.
  */
 export async function runFunnelWithAttrRetry(
   runFunnel: () => Promise<void>,
@@ -92,6 +93,7 @@ export async function runFunnelWithAttrRetry(
     if (FUNNEL_ATTR_ERROR.test(retryMessage))
       throw new Error(
         `FUNNEL_ATTR_REQUIRED: the funnel node attribute was provisioned but is not effective yet; Tailscale policy propagation can take ~30s. ${retryMessage}`,
+        { cause: lastError },
       );
     throw lastError;
   }
