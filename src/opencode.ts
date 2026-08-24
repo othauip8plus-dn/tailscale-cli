@@ -17,6 +17,7 @@ import {
   ensureFunnelReadiness,
   ensureSshReadiness,
   resolveTags,
+  runFunnelWithAttrRetry,
 } from "./deploy.js";
 import { ensureHttpsEnabled } from "./policy.js";
 import { TailscaleLocal, findTailscale } from "./tailscale.js";
@@ -581,35 +582,9 @@ export async function runOpenCodeFlow(
       );
     }
     const target = `http://127.0.0.1:${options.port}`;
-    const runFunnel = async (): Promise<void> => {
-      await local.funnel(["--bg", "--yes", "--https=443", target]);
-    };
-    try {
-      await runFunnel();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!/funnel.*(not available|node attribute not set)/i.test(message))
-        throw error;
-      let lastError = error;
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        try {
-          await new Promise((resolve) => setTimeout(resolve, 3000));
-          await runFunnel();
-          break;
-        } catch (retryError) {
-          lastError = retryError;
-        }
-      }
-      if (
-        lastError instanceof Error &&
-        /funnel.*(not available|node attribute not set)/i.test(
-          lastError.message,
-        )
-      )
-        throw new Error(
-          `FUNNEL_ATTR_REQUIRED: the funnel node attribute was provisioned but is not effective yet; Tailscale policy propagation can take ~30s. ${lastError.message}`,
-        );
-    }
+    await runFunnelWithAttrRetry(() =>
+      local.funnel(["--bg", "--yes", "--https=443", target]),
+    );
     deployment.exposures = [{ target, public: true, https: 443 }];
     const dnsName = await funnelDnsName(local);
     const urls = deriveUrls(dnsName, deployment.exposures, 443);

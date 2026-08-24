@@ -247,11 +247,14 @@ export class TailscaleApiClient {
               headers: response.headers,
               status: response.status,
             };
+          // Only parse real JSON responses; "application/hujson" also
+          // contains "json" but must stay raw text so HuJSON comments
+          // survive for policy-preserving writes.
           const contentType = response.headers.get("content-type") ?? "";
+          const isJson =
+            /json/.test(contentType) && !/hujson/.test(contentType);
           return {
-            data: contentType.includes("json")
-              ? parseHuJson<T>(text)
-              : (text as T),
+            data: isJson ? parseHuJson<T>(text) : (text as T),
             headers: response.headers,
             status: response.status,
           };
@@ -346,15 +349,17 @@ export class TailscaleApiClient {
   }
 
   async getPolicy(): Promise<PolicySnapshot> {
-    const { data, headers } = await this.request<PolicyDocument>(
+    const { data, headers } = await this.request<PolicyDocument | string>(
       `/tailnet/${this.tailnet()}/acl`,
       { headers: { Accept: "application/json" } },
       ["policy_file:read"],
     );
     const etag = headers.get("etag") ?? undefined;
+    const json =
+      typeof data === "string" ? parseHuJson<PolicyDocument>(data) : data;
     return {
-      content: JSON.stringify(data, null, 2),
-      json: data,
+      content: JSON.stringify(json, null, 2),
+      json,
       ...(etag ? { etag } : {}),
     };
   }
@@ -402,16 +407,19 @@ export class TailscaleApiClient {
       Accept: "application/json",
     };
     if (etag) headers["If-Match"] = etag;
-    const { data, headers: responseHeaders } =
-      await this.request<PolicyDocument>(
-        `/tailnet/${this.tailnet()}/acl`,
-        { method: "POST", headers, body: content },
-        ["policy_file"],
-      );
+    const { data, headers: responseHeaders } = await this.request<
+      PolicyDocument | string
+    >(
+      `/tailnet/${this.tailnet()}/acl`,
+      { method: "POST", headers, body: content },
+      ["policy_file"],
+    );
     const responseEtag = responseHeaders.get("etag") ?? undefined;
+    const json =
+      typeof data === "string" ? parseHuJson<PolicyDocument>(data) : data;
     return {
-      content: JSON.stringify(data, null, 2),
-      json: data,
+      content: JSON.stringify(json, null, 2),
+      json,
       ...(responseEtag ? { etag: responseEtag } : {}),
     };
   }
