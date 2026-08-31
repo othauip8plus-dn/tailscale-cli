@@ -42,7 +42,7 @@ import {
 } from "./daemon.js";
 import { funnelPublicDnsPropagated } from "./dns.js";
 import { manifest } from "./manifest.js";
-import { sleep as sleepMs } from "./utils.js";
+import { sleep } from "./utils.js";
 import {
   ensureDeployTags,
   ensureFunnelAccess,
@@ -1177,7 +1177,7 @@ program
             break;
           } catch (retryError) {
             if (attempt === 3) throw retryError;
-            await sleepMs(3000);
+            await sleep(3000);
           }
         }
       }
@@ -2166,7 +2166,7 @@ program
           let spawned = await trySpawn();
           while (!stopping) {
             if (spawned === undefined) {
-              await sleepMs(retryInterval);
+              await sleep(retryInterval);
               spawned = await trySpawn();
               continue;
             }
