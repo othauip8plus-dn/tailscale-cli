@@ -42,6 +42,7 @@ import {
 } from "./daemon.js";
 import { funnelPublicDnsPropagated } from "./dns.js";
 import { manifest } from "./manifest.js";
+import { sleep as sleepMs } from "./utils.js";
 import {
   ensureDeployTags,
   ensureFunnelAccess,
@@ -879,10 +880,6 @@ program
       }
     },
   );
-
-function sleepMs(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 async function funnelDnsName(
   local: TailscaleLocal,

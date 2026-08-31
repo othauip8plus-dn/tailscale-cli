@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { sleep } from "./utils.js";
 import {
   existsSync,
   mkdirSync,
@@ -46,10 +47,6 @@ export interface OpenCodeRunner {
   command: string[];
   version?: string;
   installedBy: "found" | "npx-resolved";
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
 }
 
 export async function tryVersion(

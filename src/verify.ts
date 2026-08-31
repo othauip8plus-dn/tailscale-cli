@@ -1,4 +1,5 @@
 import { connect } from "node:net";
+import { sleep } from "./utils.js";
 
 export type EndpointKind = "tls" | "tcp";
 
@@ -29,10 +30,6 @@ export interface EndpointVerification {
   verifiedPorts: number[];
   attempts: number;
   lastError?: string;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
