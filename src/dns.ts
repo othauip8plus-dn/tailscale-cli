@@ -1,3 +1,5 @@
+import { sleep } from "./utils.js";
+
 const DOH_RESOLVERS = [
   (name: string) =>
     `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=A`,
@@ -42,10 +44,6 @@ async function systemResolverA(hostname: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**

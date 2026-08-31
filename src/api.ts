@@ -5,6 +5,7 @@ import type {
   ResolvedConfig,
 } from "./types.js";
 import { parseHuJson } from "./hujson.js";
+import { sleep } from "./utils.js";
 
 const API_BASE = "https://api.tailscale.com/api/v2";
 const OAUTH_TOKEN_URL = `${API_BASE}/oauth/token`;
@@ -78,10 +79,6 @@ function envFirst(...names: string[]): string | undefined {
 
 function encodePath(value: string): string {
   return encodeURIComponent(value);
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export class TailscaleApiClient {

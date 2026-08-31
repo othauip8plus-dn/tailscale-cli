@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { randomFillSync } from "node:crypto";
+import { sleep } from "./utils.js";
 import {
   closeSync,
   existsSync,
@@ -191,10 +192,6 @@ export interface NexqlMcpRunner {
   command: string[];
   version?: string;
   installedBy: "found" | "npx-resolved";
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function tryVersion(command: string[]): Promise<string | undefined> {

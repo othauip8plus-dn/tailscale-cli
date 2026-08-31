@@ -1,5 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { sleep } from "./utils.js";
 import {
   existsSync,
   mkdirSync,
@@ -39,10 +40,6 @@ async function trySystemctl(args: string[]): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function inspectDaemon(): Promise<DaemonState> {

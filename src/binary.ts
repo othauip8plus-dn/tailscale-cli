@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { sleep } from "./utils.js";
 import {
   chmod,
   mkdir,
@@ -65,10 +66,6 @@ export function detectArch(): string {
     default:
       return os.arch().toLowerCase();
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function fetchText(url: string): Promise<string> {
