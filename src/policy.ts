@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { TailscaleApiClient } from "./api.js";
-import type { PolicySnapshot } from "./api.js";
 import { ensureHuJsonArrayItem, ensureHuJsonKey } from "./hujson.js";
 import type { PolicyDocument, ResolvedConfig } from "./types.js";
 import { confirm } from "./interactive.js";
@@ -64,7 +63,7 @@ export function funnelCovered(
   policy: PolicyDocument | undefined,
   tags: string[],
 ): boolean {
-  const targets = normalizeTagsFor(policy, tags);
+  const targets = normalizeTagsFor(tags);
   const existing = nodeAttrsOf(policy)
     .filter((entry) => entry.attr.includes("funnel"))
     .flatMap((entry) => entry.target);
@@ -100,7 +99,7 @@ export function sshCovered(
   policy: PolicyDocument | undefined,
   tags: string[],
 ): boolean {
-  const targets = normalizeTagsFor(policy, tags);
+  const targets = normalizeTagsFor(tags);
   const rules = sshRulesOf(policy);
   return targets.every((target) =>
     rules.some(
@@ -114,10 +113,7 @@ export function sshCovered(
   );
 }
 
-function normalizeTagsFor(
-  policy: PolicyDocument | undefined,
-  tags: string[],
-): string[] {
+function normalizeTagsFor(tags: string[]): string[] {
   const normalized = tags.map(normalizeTag).filter(Boolean);
   return normalized.length ? normalized : ["autogroup:member"];
 }

@@ -103,7 +103,7 @@ describe("MagicDNS preferences contract", () => {
     let requestsSeen = 0;
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
+      vi.fn(async () => {
         const method = requestsSeen++ === 0 ? "POST" : "GET";
         return method === "POST"
           ? jsonResponse({ magicDNS: true })

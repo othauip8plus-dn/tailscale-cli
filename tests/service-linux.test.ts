@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
-import type { MockInstance } from "vitest";
 
 const mockSpawnSync = vi.fn();
 
@@ -110,7 +109,7 @@ describe.skipIf(process.platform !== "linux")("linux service manager", () => {
       { args: ["daemon-reload"] },
       { args: ["enable", "--now", "my-relay"] },
     ]);
-    mockSpawnSync.mockImplementation((cmd: string, args: string[]) => {
+    mockSpawnSync.mockImplementation((_cmd: string, args: string[]) => {
       if (args.includes("show")) {
         return {
           status: 0,
@@ -193,7 +192,7 @@ describe.skipIf(process.platform !== "linux")("linux service manager", () => {
   });
 
   it("rolls back the unit file when enable fails (E9)", async () => {
-    mockSpawnSync.mockImplementation((cmd: string, args: string[]) => {
+    mockSpawnSync.mockImplementation((_cmd: string, args: string[]) => {
       if (args.includes("enable")) {
         return { status: 1, stdout: "", stderr: "Failed to enable" };
       }

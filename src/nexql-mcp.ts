@@ -10,9 +10,7 @@ import {
   readdirSync,
   rmSync,
   writeFileSync,
-  mkdtempSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join as joinPath } from "node:path";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -783,7 +781,6 @@ export function maskToken(value: string): string {
  * Passwords are stored as separate .pw files in the cache bin dir.
  */
 export async function registerRelayProfiles(options: {
-  runner: NexqlMcpRunner;
   mappings: Array<{
     listenPort: number;
     targetHost: string;
@@ -796,7 +793,7 @@ export async function registerRelayProfiles(options: {
   }>;
   defaultProfile?: string;
 }): Promise<void> {
-  const { runner, mappings, defaultProfile } = options;
+  const { mappings, defaultProfile } = options;
 
   // Global config dir: ~/.config/nexql-mcp/
   const home = process.env.USERPROFILE ?? process.env.HOME ?? "";

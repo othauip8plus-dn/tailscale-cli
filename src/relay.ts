@@ -1,7 +1,11 @@
 import net from "node:net";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
-import { parse as parseJsonc } from "jsonc-parser";
+import {
+  parse as parseJsonc,
+  printParseErrorCode,
+  type ParseError,
+} from "jsonc-parser";
 
 export interface RelayMapping {
   listenPort: number;
@@ -298,13 +302,14 @@ export function loadRelayConfigFile(filePath: string): RelayMapping[] {
   }
   const raw = readFileSync(resolved, "utf8");
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const errors: any[] = [];
+  const errors: ParseError[] = [];
 
   const parsed = parseJsonc(raw, errors) as unknown;
   if (errors.length > 0) {
     throw new Error(
-      `RELAY_CONFIG_PARSE_ERROR: ${errors.map((e) => e.error.message).join("; ")} in ${resolved}`,
+      `RELAY_CONFIG_PARSE_ERROR: ${errors
+        .map((e) => printParseErrorCode(e.error))
+        .join("; ")} in ${resolved}`,
     );
   }
 
