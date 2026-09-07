@@ -351,7 +351,7 @@ export function startOAuthWrapper(
 
   server.listen(port, "0.0.0.0", () => {
     console.log(
-      `[oauth-wrapper] listening on 0.0.0.0:${port} → ${mcpTarget}, public ${publicUrl}, client ${clientId}, secret ${clientSecret.slice(0, 5)}...`,
+      `[oauth-wrapper] listening on 0.0.0.0:${port} → ${mcpTarget}, public ${publicUrl}, client ${clientId}`,
     );
   });
   return server;

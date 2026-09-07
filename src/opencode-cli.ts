@@ -10,7 +10,6 @@ import {
   runOpenCodeFlow,
   stopOpenCodeFlow,
 } from "./opencode.js";
-import { cacheBinDir } from "./binary.js";
 import type { Envelope } from "./types.js";
 
 const DOCS_BASE =

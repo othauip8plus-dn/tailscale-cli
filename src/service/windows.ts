@@ -204,7 +204,7 @@ export function parseScStatus(name: string, output: string): ServiceStatus {
 export class WindowsServiceManager implements ServiceManager {
   async install(
     config: ServiceConfig,
-    opts: InstallOptions = {},
+    _opts: InstallOptions = {},
   ): Promise<ServiceInstallResult> {
     const serviceDir = windowsServiceDir(config.name);
     mkdirSync(serviceDir, { recursive: true });

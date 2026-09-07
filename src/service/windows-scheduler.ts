@@ -81,7 +81,7 @@ function taskExists(name: string): boolean {
 export class WindowsSchedulerManager implements ServiceManager {
   async install(
     config: ServiceConfig,
-    opts: InstallOptions = {},
+    _opts: InstallOptions = {},
   ): Promise<ServiceInstallResult> {
     if (taskExists(config.name)) {
       throw new Error(

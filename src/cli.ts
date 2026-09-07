@@ -26,7 +26,6 @@ import {
   tailscaleVersion,
   TailscaleLocal,
 } from "./tailscale.js";
-import { startOAuthWrapper } from "./oauth-wrapper.js";
 import {
   cacheBinDir,
   installWindowsMsi,
@@ -157,10 +156,6 @@ interface CliOptions {
   clientSecret?: string;
   clientId?: string;
   updateBin?: boolean;
-}
-
-function configPath(): string | undefined {
-  return program.opts<CliOptions>().config;
 }
 
 function applyCredentialFlags(): void {
@@ -1303,7 +1298,6 @@ program
   );
 
 import {
-  startRelay,
   startMultiRelay,
   parseRelayMapping,
   loadRelayConfigFile,
@@ -2109,7 +2103,6 @@ program
         // the supervisor in a permanent "profile not found" respawn loop.
         const registerProfiles = (): Promise<void> =>
           registerRelayProfiles({
-            runner,
             mappings: resolvedMappings.map((m) => ({
               listenPort: m.listenPort,
               targetHost: m.targetHost,
@@ -2291,16 +2284,34 @@ program
                 console.error(
                   `[relay-mcp-postgres] tailscale ${wantsFunnel ? "funnel" : "serve"} reconfigured to oauth-wrapper :${oauthPort}`,
                 );
-            } catch {}
+            } catch (err) {
+              if (!quietJson())
+                console.error(
+                  `[relay-mcp-postgres] failed to reconfigure ${wantsFunnel ? "funnel" : "serve"}:`,
+                  err instanceof Error ? err.message : err,
+                );
+            }
           }
-        } catch {}
+        } catch (err) {
+          if (!quietJson())
+            console.error(
+              "[relay-mcp-postgres] failed to start oauth-wrapper:",
+              err instanceof Error ? err.message : err,
+            );
+        }
 
         await new Promise<void>((resolve) => {
           const shutdown = (): void => {
             stopping = true;
             try {
               oauthServer?.close();
-            } catch {}
+            } catch (err) {
+              if (!quietJson())
+                console.error(
+                  "[relay-mcp-postgres] failed to close oauth server:",
+                  err instanceof Error ? err.message : err,
+                );
+            }
             void Promise.all([
               multiRelay?.close().catch(() => {}),
               (async () => {
