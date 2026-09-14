@@ -2291,16 +2291,22 @@ program
                 console.error(
                   `[relay-mcp-postgres] tailscale ${wantsFunnel ? "funnel" : "serve"} reconfigured to oauth-wrapper :${oauthPort}`,
                 );
-            } catch {}
+            } catch {
+              // Best-effort: reconfiguration failures should not kill the relay.
+            }
           }
-        } catch {}
+        } catch {
+          // Best-effort: serve/funnel reconfiguration to oauth-wrapper is best-effort.
+        }
 
         await new Promise<void>((resolve) => {
           const shutdown = (): void => {
             stopping = true;
             try {
               oauthServer?.close();
-            } catch {}
+            } catch {
+              // Best-effort: the oauth server may already be closed.
+            }
             void Promise.all([
               multiRelay?.close().catch(() => {}),
               (async () => {

@@ -1,6 +1,11 @@
 import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import os from "node:os";
+import {
+  parse as parseJsonc,
+  printParseErrorCode,
+  type ParseError,
+} from "jsonc-parser";
 import type { CredentialResolution, Profile, ResolvedConfig } from "./types.js";
 
 const namedCredentialEnv = [
@@ -129,10 +134,18 @@ export function loadConfigFile(
   for (const candidate of candidates) {
     try {
       const raw = readFileSync(candidate, "utf8");
-      const cleaned = raw
-        .replace(/\/\/[^\n]*/g, "")
-        .replace(/,\s*([\]}])/g, "$1");
-      const parsed = JSON.parse(cleaned) as Record<string, unknown>;
+      // Regex-based stripping corrupts any value containing "//" (e.g. URLs) or
+      // trailing-comma-like substrings; jsonc-parser handles comments, trailing
+      // commas and strings correctly.
+      const errors: ParseError[] = [];
+      const parsed = parseJsonc(raw, errors, {
+        allowTrailingComma: true,
+      }) as Record<string, unknown> | null;
+      if (errors.length > 0 || parsed === null) {
+        throw new Error(
+          `JSONC parse error: ${errors.map((e) => printParseErrorCode(e.error)).join("; ") || "unexpected end of input"}`,
+        );
+      }
       if (!parsed.clientSecret && typeof parsed.TS_CLIENT_SECRET === "string")
         parsed.clientSecret = parsed.TS_CLIENT_SECRET;
       return { config: parsed as ConfigFile, source: candidate };

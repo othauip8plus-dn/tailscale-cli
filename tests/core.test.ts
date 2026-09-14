@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   loadConfigFile,
   maskSecret,
@@ -192,5 +195,48 @@ describe("config file loading", () => {
   it("returns undefined for invalid JSON", () => {
     const result = loadConfigFile("/dev/null");
     expect(result).toBeUndefined();
+  });
+
+  it("parses JSONC comments, trailing commas and values containing //", () => {
+    const path = join(tmpdir(), `core-config-${Date.now()}.jsonc`);
+    writeFileSync(
+      path,
+      [
+        "{",
+        '  "hostname": "https://example.com/x", // URL with // must survive',
+        '  "tailnet": "my-tailnet",',
+        "  // trailing comma below",
+        '  "ssh": true,',
+        "}",
+      ].join("\n"),
+      "utf8",
+    );
+    try {
+      const result = loadConfigFile(path);
+      expect(result?.config.hostname).toBe("https://example.com/x");
+      expect(result?.config.tailnet).toBe("my-tailnet");
+      expect(result?.config.ssh).toBe(true);
+    } finally {
+      rmSync(path, { force: true });
+    }
+  });
+
+  it("falls back to strict JSON parsing for .json configs", () => {
+    const path = join(tmpdir(), `core-config-${Date.now()}.json`);
+    writeFileSync(
+      path,
+      JSON.stringify({
+        clientSecret: "tskey-client-secret-123",
+        tagOwner: ["tag:a"],
+      }),
+      "utf8",
+    );
+    try {
+      const result = loadConfigFile(path);
+      expect(result?.config.clientSecret).toBe("tskey-client-secret-123");
+      expect(result?.config.tagOwner).toEqual(["tag:a"]);
+    } finally {
+      rmSync(path, { force: true });
+    }
   });
 });
