@@ -185,7 +185,22 @@ export class TailscaleApiClient {
         response.status,
         "OAUTH_TOKEN_FAILED",
       );
-    const data = JSON.parse(text) as OAuthTokenResponse;
+    let data: OAuthTokenResponse;
+    try {
+      data = JSON.parse(text) as OAuthTokenResponse;
+    } catch {
+      throw new ApiError(
+        `OAuth token request returned invalid JSON: ${sanitizeServerText(text).slice(0, 300)}`,
+        response.status,
+        "OAUTH_TOKEN_INVALID_RESPONSE",
+      );
+    }
+    if (typeof data.access_token !== "string" || !data.access_token)
+      throw new ApiError(
+        "OAuth token request returned a response without access_token",
+        response.status,
+        "OAUTH_TOKEN_INVALID_RESPONSE",
+      );
     this.oauthToken = {
       value: data.access_token,
       expiresAt: now + Math.max(60, data.expires_in ?? 3600) * 1000,

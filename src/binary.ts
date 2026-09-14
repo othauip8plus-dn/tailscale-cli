@@ -31,6 +31,12 @@ export interface BinaryDownloadInfo {
   cachedPath: string;
 }
 
+interface StableIndex {
+  Version?: string;
+  Tarballs?: Record<string, string>;
+  MSIs?: Record<string, string>;
+}
+
 export function cacheBinDir(): string {
   if (process.env.TS_BIN_DIR?.trim())
     return resolve(process.env.TS_BIN_DIR.trim());
@@ -117,10 +123,15 @@ export async function latestStableInfo(): Promise<{
       sha256Url: `${STABLE_BASE}/${tarball}.sha256`,
     };
   }
-  const index = JSON.parse(await fetchText(STABLE_INDEX_URL)) as {
-    Version?: string;
-    Tarballs?: Record<string, string>;
-  };
+  const indexText = await fetchText(STABLE_INDEX_URL);
+  let index: StableIndex;
+  try {
+    index = JSON.parse(indexText) as StableIndex;
+  } catch {
+    throw new Error(
+      "BIN_INDEX_INVALID: the stable index returned invalid JSON; cannot determine the latest stable build",
+    );
+  }
   const version = index.Version;
   const tarball = index.Tarballs?.[arch];
   if (!version || !tarball)
@@ -357,10 +368,15 @@ export async function latestWindowsInstallInfo(): Promise<WindowsInstallResult> 
       installed: false,
     };
   }
-  const index = JSON.parse(await fetchText(STABLE_INDEX_URL)) as {
-    Version?: string;
-    MSIs?: Record<string, string>;
-  };
+  const indexText = await fetchText(STABLE_INDEX_URL);
+  let index: StableIndex;
+  try {
+    index = JSON.parse(indexText) as StableIndex;
+  } catch {
+    throw new Error(
+      "BIN_INDEX_INVALID: the stable index returned invalid JSON; cannot determine the latest stable Windows MSI",
+    );
+  }
   const version = index.Version;
   const msi = index.MSIs?.[arch];
   if (!version || !msi)
