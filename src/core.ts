@@ -140,8 +140,8 @@ export function loadConfigFile(
       const errors: ParseError[] = [];
       const parsed = parseJsonc(raw, errors, {
         allowTrailingComma: true,
-      }) as Record<string, unknown> | null;
-      if (errors.length > 0 || parsed === null) {
+      }) as Record<string, unknown> | null | undefined;
+      if (errors.length > 0 || parsed === null || parsed === undefined) {
         throw new Error(
           `JSONC parse error: ${errors.map((e) => printParseErrorCode(e.error)).join("; ") || "unexpected end of input"}`,
         );

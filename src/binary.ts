@@ -123,9 +123,10 @@ export async function latestStableInfo(): Promise<{
       sha256Url: `${STABLE_BASE}/${tarball}.sha256`,
     };
   }
+  const indexText = await fetchText(STABLE_INDEX_URL);
   let index: StableIndex;
   try {
-    index = JSON.parse(await fetchText(STABLE_INDEX_URL)) as StableIndex;
+    index = JSON.parse(indexText) as StableIndex;
   } catch {
     throw new Error(
       "BIN_INDEX_INVALID: the stable index returned invalid JSON; cannot determine the latest stable build",
@@ -367,9 +368,10 @@ export async function latestWindowsInstallInfo(): Promise<WindowsInstallResult> 
       installed: false,
     };
   }
+  const indexText = await fetchText(STABLE_INDEX_URL);
   let index: StableIndex;
   try {
-    index = JSON.parse(await fetchText(STABLE_INDEX_URL)) as StableIndex;
+    index = JSON.parse(indexText) as StableIndex;
   } catch {
     throw new Error(
       "BIN_INDEX_INVALID: the stable index returned invalid JSON; cannot determine the latest stable Windows MSI",

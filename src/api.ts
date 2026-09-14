@@ -195,6 +195,12 @@ export class TailscaleApiClient {
         "OAUTH_TOKEN_INVALID_RESPONSE",
       );
     }
+    if (typeof data.access_token !== "string" || !data.access_token)
+      throw new ApiError(
+        "OAuth token request returned a response without access_token",
+        response.status,
+        "OAUTH_TOKEN_INVALID_RESPONSE",
+      );
     this.oauthToken = {
       value: data.access_token,
       expiresAt: now + Math.max(60, data.expires_in ?? 3600) * 1000,
