@@ -13,6 +13,7 @@ import {
   DEFAULT_OPENCODE_PORT,
   OPENCODE_PERMISSION_CONFIG,
   deriveUrls,
+  funnelWithRetry,
   openCodeServeArgs,
   readOpenCodeServeRecord,
   resolveOpenCodeRunner,
@@ -263,6 +264,64 @@ describe("tryVersion", () => {
       vi.unstubAllEnvs();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("funnelWithRetry", () => {
+  it("resolves when a retry succeeds after a transient attribute error", async () => {
+    let calls = 0;
+    const runFunnel = async (): Promise<void> => {
+      calls += 1;
+      if (calls === 1)
+        throw new Error("funnel: node attribute not set for this node");
+    };
+    await expect(
+      funnelWithRetry(runFunnel, { attempts: 2, delayMs: 1 }),
+    ).resolves.toBeUndefined();
+    expect(calls).toBe(2);
+  });
+
+  it("succeeds immediately when the first funnel run works", async () => {
+    const runFunnel = vi.fn().mockResolvedValue(undefined);
+    await expect(
+      funnelWithRetry(runFunnel, { attempts: 3, delayMs: 1 }),
+    ).resolves.toBeUndefined();
+    expect(runFunnel).toHaveBeenCalledTimes(1);
+  });
+
+  it("rethrows non-attribute errors without retrying", async () => {
+    const runFunnel = vi.fn().mockRejectedValue(new Error("boom"));
+    await expect(
+      funnelWithRetry(runFunnel, { attempts: 3, delayMs: 1 }),
+    ).rejects.toThrow("boom");
+    expect(runFunnel).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts the retry loop on a non-attribute failure instead of relabelling it", async () => {
+    const runFunnel = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("funnel: node attribute not set for this node");
+      })
+      .mockImplementationOnce(() => {
+        throw new Error("network exploded");
+      });
+    await expect(
+      funnelWithRetry(runFunnel, { attempts: 3, delayMs: 1 }),
+    ).rejects.toThrow("network exploded");
+    expect(runFunnel).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws FUNNEL_ATTR_REQUIRED when every retry keeps failing", async () => {
+    const runFunnel = vi
+      .fn()
+      .mockRejectedValue(new Error("funnel node attribute not set"));
+    await expect(
+      funnelWithRetry(runFunnel, { attempts: 2, delayMs: 1 }),
+    ).rejects.toThrow(
+      "FUNNEL_ATTR_REQUIRED: the funnel node attribute was provisioned",
+    );
+    expect(runFunnel).toHaveBeenCalledTimes(3);
   });
 });
 

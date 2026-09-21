@@ -118,6 +118,16 @@ async function handleGlobalFlags(): Promise<boolean> {
   const start = performance.now();
   try {
     if (process.platform === "win32") {
+      if (!rawArgs.includes("--yes")) {
+        const approved = await confirm(
+          "Download and silently install the Tailscale MSI on this machine?",
+          false,
+        );
+        if (!approved)
+          throw new Error(
+            "UPDATE_BIN_CONFIRMATION_REQUIRED: pass --yes to install the Tailscale MSI",
+          );
+      }
       const result = await installWindowsMsi({});
       emit(
         "update-bin",
@@ -257,8 +267,10 @@ function resolvedCredentialEnv(): string | undefined {
   return credentialEnvName(env);
 }
 
-function envTagOwner(): string[] | undefined {
-  const value = process.env.TS_TAG_OWNER?.trim();
+function envTagOwner(
+  env: NodeJS.ProcessEnv = configEnv(),
+): string[] | undefined {
+  const value = env.TS_TAG_OWNER?.trim();
   if (!value) return undefined;
   return value
     .split(",")
@@ -372,15 +384,19 @@ const ERROR_DOCS: Record<string, string> = {
   PRIVILEGE_REQUIRED: `${DOCS_BASE}/user_requirement.md#privileges`,
 };
 
-async function credentialFromOptions(): Promise<
-  ReturnType<typeof resolveCredential>
-> {
+async function credentialFromOptions(
+  options: { prompt?: boolean } = {},
+): Promise<ReturnType<typeof resolveCredential>> {
   const opts = program.opts<CliOptions>();
   const env = configEnv();
   const name = opts.credentialEnv ?? env.TS_CREDENTIAL_ENV?.trim();
   if (!name) {
     const resolution = resolveCredential(env);
-    if (!resolution.found && resolution.error === "CREDENTIAL_NOT_FOUND") {
+    if (
+      options.prompt !== false &&
+      !resolution.found &&
+      resolution.error === "CREDENTIAL_NOT_FOUND"
+    ) {
       const prompted = await promptCredential();
       if (prompted && prompted.startsWith("tskey-client-")) {
         process.env.TS_CLIENT_SECRET = prompted;
@@ -519,83 +535,99 @@ program
   .description(
     "Resolve credentials, runtime, local binary and API capability without remote side effects",
   )
-  .option("--detect-credentials")
-  .option("--show-resolution")
+  .option(
+    "--detect-credentials",
+    "run interactive credential resolution (may prompt in a TTY when no trust credential is set)",
+  )
+  .option(
+    "--show-resolution",
+    "include the resolved auth detail (source and masked value) in the output",
+  )
   .option("--deep", "run read-only API capability probes (no side effects)")
-  .action(async (options: { deep?: boolean }) => {
-    const start = performance.now();
-    try {
-      const config = resolveConfig(configEnv());
-      const credential = await credentialFromOptions();
-      const auth = authFromOptions();
-      let binary: unknown = { found: false };
+  .action(
+    async (options: {
+      detectCredentials?: boolean;
+      showResolution?: boolean;
+      deep?: boolean;
+    }) => {
+      const start = performance.now();
       try {
-        binary = await tailscaleVersion(undefined, { download: false });
-      } catch (error) {
-        binary = {
-          found: false,
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
-      const warnings = [...config.warnings];
-      if (!auth.found)
-        warnings.push(
-          auth.error === "MULTIPLE_CREDENTIALS"
-            ? "CREDENTIAL_AMBIGUOUS: choose a credential explicitly with --credential-env"
-            : "CREDENTIAL_NOT_FOUND",
-        );
-      if (apiCredentialHint() === "missing")
-        warnings.push(
-          "API_CREDENTIAL_NOT_CONFIGURED: deploy can still use TS_AUTH_KEY",
-        );
-      let deep: Record<string, unknown> | undefined;
-      if (options.deep) {
-        const credentialEnv = resolvedCredentialEnv();
-        deep = await deepDoctor(config, {
-          ...(credentialEnv ? { credentialEnvName: credentialEnv } : {}),
+        const config = resolveConfig(configEnv());
+        const credential = await credentialFromOptions({
+          prompt: options.detectCredentials === true,
         });
-        const scopes = deep.scopes as Record<string, string>;
-        if (deep.httpsEnabled === false)
+        const auth = authFromOptions();
+        let binary: unknown = { found: false };
+        try {
+          binary = await tailscaleVersion(undefined, { download: false });
+        } catch (error) {
+          binary = {
+            found: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+        const warnings = [...config.warnings];
+        if (!auth.found)
           warnings.push(
-            "HTTPS_DISABLED: tailnet HTTPS is disabled; Funnel/Serve will not work until it is enabled",
+            auth.error === "MULTIPLE_CREDENTIALS"
+              ? "CREDENTIAL_AMBIGUOUS: choose a credential explicitly with --credential-env"
+              : "CREDENTIAL_NOT_FOUND",
           );
-        if (deep.funnelReady === false)
+        if (apiCredentialHint() === "missing")
           warnings.push(
-            "FUNNEL_ATTR_MISSING: the funnel node attribute is not set for the deployment tags; run a funnel flow with --apply-policy",
+            "API_CREDENTIAL_NOT_CONFIGURED: deploy can still use TS_AUTH_KEY",
           );
-        if (scopes.devicesCore === "missing-scope")
-          warnings.push("API_SCOPE_MISSING: devices:core scope is not granted");
-        if (scopes.policyFile === "missing-scope")
-          warnings.push(
-            "API_SCOPE_MISSING: policy_file scope is not granted (funnel/tag provisioning will fail)",
-          );
-        if (scopes.dns === "missing-scope")
-          warnings.push("API_SCOPE_MISSING: dns scope is not granted");
-        if (scopes.all === "missing-scope")
-          warnings.push(
-            "API_SCOPE_MISSING: all scope is not granted (tailnet HTTPS cannot be enabled)",
-          );
+        let deep: Record<string, unknown> | undefined;
+        if (options.deep) {
+          const credentialEnv = resolvedCredentialEnv();
+          deep = await deepDoctor(config, {
+            ...(credentialEnv ? { credentialEnvName: credentialEnv } : {}),
+          });
+          const scopes = deep.scopes as Record<string, string>;
+          if (deep.httpsEnabled === false)
+            warnings.push(
+              "HTTPS_DISABLED: tailnet HTTPS is disabled; Funnel/Serve will not work until it is enabled",
+            );
+          if (deep.funnelReady === false)
+            warnings.push(
+              "FUNNEL_ATTR_MISSING: the funnel node attribute is not set for the deployment tags; run a funnel flow with --apply-policy",
+            );
+          if (scopes.devicesCore === "missing-scope")
+            warnings.push(
+              "API_SCOPE_MISSING: devices:core scope is not granted",
+            );
+          if (scopes.policyFile === "missing-scope")
+            warnings.push(
+              "API_SCOPE_MISSING: policy_file scope is not granted (funnel/tag provisioning will fail)",
+            );
+          if (scopes.dns === "missing-scope")
+            warnings.push("API_SCOPE_MISSING: dns scope is not granted");
+          if (scopes.all === "missing-scope")
+            warnings.push(
+              "API_SCOPE_MISSING: all scope is not granted (tailnet HTTPS cannot be enabled)",
+            );
+        }
+        emit(
+          "doctor",
+          {
+            config,
+            credential,
+            apiCredential: apiCredentialHint(),
+            binary,
+            runtime,
+            ...(options.showResolution ? { auth } : {}),
+            ...(deep ? { deep } : {}),
+          },
+          warnings,
+          [],
+          [],
+          start,
+        );
+      } catch (error) {
+        fail("doctor", error, start);
       }
-      emit(
-        "doctor",
-        {
-          config,
-          credential,
-          auth,
-          apiCredential: apiCredentialHint(),
-          binary,
-          runtime,
-          ...(deep ? { deep } : {}),
-        },
-        warnings,
-        [],
-        [],
-        start,
-      );
-    } catch (error) {
-      fail("doctor", error, start);
-    }
-  });
+    },
+  );
 
 program
   .command("deploy")
@@ -643,8 +675,9 @@ program
       try {
         if (options.keyExpiry) process.env.TS_KEY_EXPIRY = options.keyExpiry;
         const credentialEnv = resolvedCredentialEnv();
-        const tagOwner = options.tagOwner ?? envTagOwner();
-        const config = resolveConfig(configEnv());
+        const env = configEnv();
+        const tagOwner = options.tagOwner ?? envTagOwner(env);
+        const config = resolveConfig(env);
         if (options.ssh !== undefined) config.ssh = options.ssh;
         if (options.stateDir) config.stateDir = options.stateDir;
         const result = await deployCommand(config, {
@@ -721,8 +754,9 @@ program
       try {
         if (options.keyExpiry) process.env.TS_KEY_EXPIRY = options.keyExpiry;
         const credentialEnv = resolvedCredentialEnv();
-        const tagOwner = options.tagOwner ?? envTagOwner();
-        const config = resolveConfig(configEnv());
+        const env = configEnv();
+        const tagOwner = options.tagOwner ?? envTagOwner(env);
+        const config = resolveConfig(env);
         if (options.ssh !== undefined) config.ssh = options.ssh;
         if (options.stateDir) config.stateDir = options.stateDir;
         const result = await deployCommand(config, {
@@ -786,7 +820,10 @@ program
   .description(
     "Download the latest stable Tailscale client into the package cache (never overwrites package-managed binaries)",
   )
-  .option("--yes")
+  .option(
+    "--yes",
+    "approve the silent Windows MSI install without an interactive confirmation",
+  )
   .option("--dry-run")
   .option("--force")
   .option("--skip-checksum")
@@ -820,6 +857,16 @@ program
             );
             return;
           }
+          if (options.yes !== true) {
+            const approved = await confirm(
+              "Download and silently install the Tailscale MSI on this machine?",
+              false,
+            );
+            if (!approved)
+              throw new Error(
+                "UPDATE_BIN_CONFIRMATION_REQUIRED: pass --yes to install the Tailscale MSI",
+              );
+          }
           const result = await installWindowsMsi({
             ...(options.skipChecksum ? { skipChecksum: true } : {}),
           });
@@ -829,7 +876,11 @@ program
                   "BIN_CHECKSUM_SKIPPED: --skip-checksum disables the MSI download integrity check",
                 ]
               : []),
-            "WINDOWS_MSI_INSTALLED: Tailscale MSI installed silently",
+            ...(options.yes === true
+              ? [
+                  "WINDOWS_MSI_INSTALLED: Tailscale MSI installed silently (approved with --yes)",
+                ]
+              : ["WINDOWS_MSI_INSTALLED: Tailscale MSI installed silently"]),
           ];
           emit(
             "update-bin",

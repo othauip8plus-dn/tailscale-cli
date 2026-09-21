@@ -481,6 +481,49 @@ export interface OpenCodeFlowResult {
   verifyAttempts?: number;
 }
 
+/**
+ * Run `tailscale funnel` with retries for the transient "node attribute not
+ * set / not available" error that occurs right after the funnel node attribute
+ * is provisioned but before policy propagation completes. Succeeds (returns)
+ * as soon as a retry succeeds; throws `FUNNEL_ATTR_REQUIRED` only when every
+ * attempt keeps failing with the attribute error.
+ */
+export async function funnelWithRetry(
+  runFunnel: () => Promise<void>,
+  options: { attempts?: number; delayMs?: number } = {},
+): Promise<void> {
+  const attempts = options.attempts ?? 4;
+  const delayMs = options.delayMs ?? 3000;
+  const isAttributeError = (error: unknown): boolean => {
+    const message = error instanceof Error ? error.message : String(error);
+    return /funnel.*(not available|node attribute not set)/i.test(message);
+  };
+  try {
+    await runFunnel();
+    return;
+  } catch (error) {
+    if (!isAttributeError(error)) throw error;
+    let lastFailure: Error =
+      error instanceof Error ? error : new Error(String(error));
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        await runFunnel();
+        return;
+      } catch (retryError) {
+        if (!isAttributeError(retryError)) throw retryError;
+        lastFailure =
+          retryError instanceof Error
+            ? retryError
+            : new Error(String(retryError));
+      }
+    }
+    throw new Error(
+      `FUNNEL_ATTR_REQUIRED: the funnel node attribute was provisioned but is not effective yet; Tailscale policy propagation can take ~30s. ${lastFailure.message}`,
+    );
+  }
+}
+
 export async function runOpenCodeFlow(
   options: OpenCodeFlowOptions,
 ): Promise<OpenCodeFlowResult> {
@@ -584,32 +627,7 @@ export async function runOpenCodeFlow(
     const runFunnel = async (): Promise<void> => {
       await local.funnel(["--bg", "--yes", "--https=443", target]);
     };
-    try {
-      await runFunnel();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!/funnel.*(not available|node attribute not set)/i.test(message))
-        throw error;
-      let lastError = error;
-      for (let attempt = 0; attempt < 4; attempt += 1) {
-        try {
-          await new Promise((resolve) => setTimeout(resolve, 3000));
-          await runFunnel();
-          break;
-        } catch (retryError) {
-          lastError = retryError;
-        }
-      }
-      if (
-        lastError instanceof Error &&
-        /funnel.*(not available|node attribute not set)/i.test(
-          lastError.message,
-        )
-      )
-        throw new Error(
-          `FUNNEL_ATTR_REQUIRED: the funnel node attribute was provisioned but is not effective yet; Tailscale policy propagation can take ~30s. ${lastError.message}`,
-        );
-    }
+    await funnelWithRetry(runFunnel);
     deployment.exposures = [{ target, public: true, https: 443 }];
     const dnsName = await funnelDnsName(local);
     const urls = deriveUrls(dnsName, deployment.exposures, 443);

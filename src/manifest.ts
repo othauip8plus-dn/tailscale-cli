@@ -108,7 +108,7 @@ export const manifest = {
     {
       name: "doctor",
       summary:
-        "Resolve credentials, runtime, local binary and API capability with no remote side effects.",
+        "Resolve credentials, runtime, local binary and API capability with no remote side effects. Resolves credentials passively by default; --detect-credentials additionally enables an interactive TTY prompt when no trust credential is set; --show-resolution includes the full resolved auth detail.",
       command: ["doctor", ["--detect-credentials"], ["--show-resolution"]],
       consumes: {
         inputs: [
@@ -120,7 +120,7 @@ export const manifest = {
         inputsSchema: "no positional args; flags optional",
       },
       outputs: {
-        json: "CommandResult(envelope) > resolved { config, credential {found,source,masked}, apiCredential, binary, runtime }",
+        json: "CommandResult(envelope) > resolved { config, credential {found,source,masked}, apiCredential, binary, runtime, auth? (with --show-resolution) }",
       },
       scopes: ["none (local only)"],
       privileges: ["read files", "read env"],
@@ -438,9 +438,13 @@ export const manifest = {
       outputs: { json: "resolved { cached, before?, after?, info? }" },
       scopes: ["none"],
       privileges: ["write to the cache directory"],
-      sideEffects: ["download + verify + atomic-install stable binary"],
+      sideEffects: [
+        "download + verify + atomic-install stable binary",
+        "Windows only: silently installs the MSI behind --yes or a TTY confirmation",
+      ],
       retryable: true,
-      confirmation: "never (explicit command)",
+      confirmation:
+        "never on POSIX; Windows MSI install requires --yes (or a TTY confirmation)",
     },
     {
       name: "service",
