@@ -297,6 +297,21 @@ describe("funnelWithRetry", () => {
     expect(runFunnel).toHaveBeenCalledTimes(1);
   });
 
+  it("aborts the retry loop on a non-attribute failure instead of relabelling it", async () => {
+    const runFunnel = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("funnel: node attribute not set for this node");
+      })
+      .mockImplementationOnce(() => {
+        throw new Error("network exploded");
+      });
+    await expect(
+      funnelWithRetry(runFunnel, { attempts: 3, delayMs: 1 }),
+    ).rejects.toThrow("network exploded");
+    expect(runFunnel).toHaveBeenCalledTimes(2);
+  });
+
   it("throws FUNNEL_ATTR_REQUIRED when every retry keeps failing", async () => {
     const runFunnel = vi
       .fn()

@@ -494,13 +494,15 @@ export async function funnelWithRetry(
 ): Promise<void> {
   const attempts = options.attempts ?? 4;
   const delayMs = options.delayMs ?? 3000;
+  const isAttributeError = (error: unknown): boolean => {
+    const message = error instanceof Error ? error.message : String(error);
+    return /funnel.*(not available|node attribute not set)/i.test(message);
+  };
   try {
     await runFunnel();
     return;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/funnel.*(not available|node attribute not set)/i.test(message))
-      throw error;
+    if (!isAttributeError(error)) throw error;
     let lastFailure: Error =
       error instanceof Error ? error : new Error(String(error));
     for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -509,6 +511,7 @@ export async function funnelWithRetry(
         await runFunnel();
         return;
       } catch (retryError) {
+        if (!isAttributeError(retryError)) throw retryError;
         lastFailure =
           retryError instanceof Error
             ? retryError

@@ -118,6 +118,16 @@ async function handleGlobalFlags(): Promise<boolean> {
   const start = performance.now();
   try {
     if (process.platform === "win32") {
+      if (!rawArgs.includes("--yes")) {
+        const approved = await confirm(
+          "Download and silently install the Tailscale MSI on this machine?",
+          false,
+        );
+        if (!approved)
+          throw new Error(
+            "UPDATE_BIN_CONFIRMATION_REQUIRED: pass --yes to install the Tailscale MSI",
+          );
+      }
       const result = await installWindowsMsi({});
       emit(
         "update-bin",
