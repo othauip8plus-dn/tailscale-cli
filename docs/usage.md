@@ -20,9 +20,13 @@ Place `tailscale-cli.config.json` in your project root or pass `--config <path>`
   "tags": ["prod", "web"],
   "keyExpiry": "max",
   "ephemeral": false,
+  "tagOwner": ["tag:admin"],
   "credentialEnv": "CI_TAILSCALE_TRUST"
 }
 ```
+
+`tagOwner` supplies owners when auto-provisioning missing `tagOwners`
+(`--apply-policy`), like `--tag-owner <owner...>`/`TS_TAG_OWNER`, and is overridden by either.
 
 `credentialEnv` names the env var that holds the OAuth trust credential (the value itself
 must come from the environment); it is the config-file equivalent of
@@ -42,7 +46,7 @@ auto-detecting.
 - `--cleanup` prunes exact-match offline devices for the deployment at the end on **any** profile (without the flag, no cleanup runs anywhere; `TS_NO_CLEANUP=1` still disables it).
 - With `deploy --funnel`, the funnel node attribute is verified **before** the local `funnel` command runs: auto-provisioned when `--apply-policy` is present, otherwise the deploy fails fast with `FUNNEL_ATTR_REQUIRED`.
 - When `TS_TAGS` is unset and the profile is not `dev`, a deterministic tag is used: `TS_TAG_BASE`, else the CI repository path, else `tailsacle-cli`/hostname.
-- Missing Tailscale binaries are auto-downloaded (SHA256-verified) into the cache; `update-bin` downloads the latest stable build there and never overwrites package-managed binaries. On Windows the MSI is downloaded, checksummed and installed silently when running as Administrator (otherwise the exact `msiexec /i … /qn` command is returned).
+- Missing Tailscale binaries are auto-downloaded (SHA256-verified) into the cache; `update-bin` downloads the latest stable build there and never overwrites package-managed binaries. On Windows the MSI is downloaded, checksummed and installed silently when running as Administrator, but only behind `--yes` or an interactive confirmation (otherwise the exact `msiexec /i … /qn` command is returned). `doctor` resolves credentials passively by default and only prompts interactively with `--detect-credentials`; `doctor --show-resolution` includes the full resolved auth detail in the output.
 
 ## Guarded operations
 

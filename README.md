@@ -289,9 +289,14 @@ environment variables override:
   "tags": ["prod", "web"],
   "keyExpiry": "max",
   "ephemeral": false,
+  "tagOwner": ["tag:admin"],
   "credentialEnv": "CI_TAILSCALE_TRUST"
 }
 ```
+
+`tagOwner` takes effect when auto-provisioning missing `tagOwners`
+(`--apply-policy`), exactly like `--tag-owner`/`TS_TAG_OWNER`, and is overridden by
+either.
 
 Any env var whose value starts with `tskey-client-` is auto-detected as an OAuth trust
 credential; use `--credential-env <name>`, `TS_CREDENTIAL_ENV`, or the config file
@@ -344,9 +349,11 @@ the deploy fails fast with `FUNNEL_ATTR_REQUIRED`. Enable tailnet HTTPS for Funn
 `--enable-https`; tailnet HTTPS is never enabled implicitly.
 
 On Windows there is no portable binary: `update-bin`/auto-download resolve the MSI from the
-stable index, verify its SHA256 and install it silently when running as Administrator;
-without Administrator privileges the exact `msiexec /i "<cache>\…msi" /qn` command is
-returned.
+stable index, verify its SHA256 and install it silently when running as Administrator — but
+only behind `--yes` or an interactive confirmation; without Administrator privileges the
+exact `msiexec /i "<cache>\…msi" /qn` command is returned. `doctor --detect-credentials`
+enables interactive credential prompting (by default doctor only detects passively), and
+`doctor --show-resolution` includes the full resolved auth detail in the output.
 
 ## Development
 
