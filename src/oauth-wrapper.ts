@@ -11,6 +11,8 @@ export interface OAuthWrapperOptions {
   clientId?: string;
   /** Registered OAuth client secret — required to exchange any grant. */
   clientSecret?: string;
+  /** Called when the listener fails asynchronously (e.g. EADDRINUSE). */
+  onError?: (message: string) => void;
 }
 
 interface IssuedCode {
@@ -359,7 +361,7 @@ export function startOAuthWrapper(
         : `OAUTH_LISTEN_FAILED: ${error.message}`;
     console.error(`[oauth-wrapper] ${message}`);
     process.exitCode = 1;
-    process.emit("oauthWrapperError" as never, new Error(message));
+    options.onError?.(message);
   });
 
   server.listen(port, "0.0.0.0", () => {

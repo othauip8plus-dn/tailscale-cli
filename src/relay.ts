@@ -55,6 +55,11 @@ export interface MultiRelayInstance {
   close: () => Promise<void>;
 }
 
+/** A TCP port usable by `server.listen()` / `net.connect()`. */
+export function isValidPort(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 65535;
+}
+
 /**
  * Parse a host:port token that may be a bare IPv4/name, an IPv6 address in
  * [::1] brackets, or a plain "host:port" / "[host]:port" pair.
@@ -67,10 +72,6 @@ export interface MultiRelayInstance {
  *  "[fd7a::1]:5432"    → host="fd7a::1" port=5432
  *  "[::1]:5432"        → host="::1" port=5432
  */
-export function isValidPort(value: number): boolean {
-  return Number.isInteger(value) && value >= 1 && value <= 65535;
-}
-
 function splitHostPort(token: string): { host: string; port: number } {
   const trimmed = token.trim();
   // IPv6 bracketed: [host]:port
@@ -147,7 +148,7 @@ export function parseRelayMapping(
         const start = pos;
         while (pos < raw.length && raw[pos] !== ":") pos++;
         const port = Number(raw.slice(start, pos));
-        if (!Number.isFinite(port) || port <= 0 || port > 65535)
+        if (!isValidPort(port))
           throw new Error(
             `RELAY_MAP_INVALID: invalid port after "[${host}]" in "${mapStr}"`,
           );
@@ -163,12 +164,9 @@ export function parseRelayMapping(
       const token = raw.slice(start, pos);
       pos++; // consume colon or EOF
       const num = Number(token);
-      if (
-        Number.isFinite(num) &&
-        num > 0 &&
-        num <= 65535 &&
-        token.trim() !== ""
-      ) {
+      // isValidPort, not a bare range check: "8080.5" is finite and in range
+      // but reaches server.listen()/net.connect() as an opaque EINVAL.
+      if (isValidPort(num) && token.trim() !== "") {
         atoms.push({ kind: "port", value: num });
       } else if (
         token.includes(".") ||

@@ -24,13 +24,12 @@ const SECRET_URL_RE = /:\/\/[^/\s:@]+:[^/\s:@]+@/;
  * a config file inject arbitrary directives that systemd executes as root, so
  * these are rejected at parse time.
  */
-function assertNoSafeField(field: string, value: string): void {
+function assertRenderSafe(field: string, value: string): void {
   assertNoControlChars(field, value);
   assertNoBatchUnsafe(value);
 }
 
 function assertNoControlChars(field: string, value: string): void {
-  // eslint-disable-next-line no-control-regex
   if (/[\0\r\n]/.test(value)) {
     throw new Error(
       `SERVICE_FIELD_INVALID: ${field} must not contain newline or NUL characters`,
@@ -41,7 +40,8 @@ function assertNoControlChars(field: string, value: string): void {
 /**
  * A literal `"` cannot be escaped inside a cmd.exe quoted token — it always
  * terminates the token, letting the remainder inject extra commands into the
- * generated `.cmd`. Windows paths cannot contain `"` anyway, so reject it.
+ * generated `.cmd`. systemd's `ExecStart=` parser applies the same quoting, so
+ * Windows paths cannot contain `"` anyway: reject it.
  */
 export function assertNoBatchUnsafe(value: string): void {
   if (value.includes('"')) {
@@ -149,16 +149,20 @@ export function validateServiceConfig(
     typeof input.description === "string" && input.description.trim()
       ? input.description.trim()
       : "Tailscale TCP Relay Service - managed by tailsacle-cli";
+  // Rendered verbatim as `Description=` in the systemd unit, so a newline here
+  // is the same directive-injection vector as `user`/`args`. Quotes are common
+  // and harmless in a description, so only control characters are rejected.
+  assertNoControlChars("description", description);
   const user =
     typeof input.user === "string" && input.user.trim()
       ? input.user.trim()
       : "current";
-  assertNoSafeField("user", user);
+  assertRenderSafe("user", user);
   const workingDirRaw =
     typeof input.workingDir === "string" && input.workingDir.trim()
       ? input.workingDir.trim()
       : ".";
-  assertNoSafeField("workingDir", workingDirRaw);
+  assertRenderSafe("workingDir", workingDirRaw);
   const workingDir = isAbsolute(workingDirRaw)
     ? workingDirRaw
     : resolvePath(baseDir, workingDirRaw);
@@ -169,7 +173,7 @@ export function validateServiceConfig(
   }
   let script: string | undefined;
   if (typeof input.script === "string" && input.script.trim()) {
-    assertNoSafeField("script", input.script);
+    assertRenderSafe("script", input.script);
     script = isAbsolute(input.script)
       ? input.script
       : resolvePath(baseDir, input.script);
@@ -187,7 +191,7 @@ export function validateServiceConfig(
   }
   const args = (input.args as string[])
     .map((a) => {
-      assertNoSafeField("args", a);
+      assertRenderSafe("args", a);
       return a.trim();
     })
     .filter(Boolean);
@@ -205,7 +209,7 @@ export function validateServiceConfig(
         `SERVICE_ENV_KEY_INVALID: env key must match [A-Za-z_][A-Za-z0-9_]*, got "${key}"`,
       );
     }
-    assertNoSafeField(`env.${key}`, value);
+    assertRenderSafe(`env.${key}`, value);
     env[key] = value;
   }
   const restartInput =
@@ -235,7 +239,7 @@ export function validateServiceConfig(
       typeof logInput.dir === "string" && logInput.dir.trim()
         ? logInput.dir
         : "./logs";
-    assertNoSafeField("log.dir", logDirRaw);
+    assertRenderSafe("log.dir", logDirRaw);
     log = {
       dir: isAbsolute(logDirRaw)
         ? logDirRaw

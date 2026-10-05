@@ -149,22 +149,28 @@ function deviceFromStatus(status: unknown): Device | Record<string, unknown> {
   return device;
 }
 
-function redactEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+/**
+ * Credential variable names stripped from the environment handed to the
+ * `tailscale up` child: the child only needs socket/host settings, and every
+ * one of these would otherwise be inherited by any process it spawns.
+ */
+const CREDENTIAL_ENV_NAMES = [
+  "TS_API_KEY",
+  "TS_ACCESS_TOKEN",
+  "TS_API_TOKEN",
+  "TS_CLIENT_SECRET",
+  "TS_OAUTH_CLIENT_SECRET",
+  "TS_AUTH_KEY",
+  "TS_TRUST_CREDENTIAL",
+  "TS_API_TRUST",
+  "TAILSCALE_TRUST_CREDENTIAL",
+  "TAILSCALE_API_TRUST",
+] as const;
+
+/** Returns a copy of `env` with every known credential variable removed. */
+export function redactEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const copy = { ...env };
-  for (const name of [
-    "TS_API_KEY",
-    "TS_ACCESS_TOKEN",
-    "TS_API_TOKEN",
-    "TS_CLIENT_SECRET",
-    "TS_OAUTH_CLIENT_SECRET",
-    "TS_AUTH_KEY",
-    "TS_TRUST_CREDENTIAL",
-    "TS_API_TRUST",
-    "TAILSCALE_TRUST_CREDENTIAL",
-    "TAILSCALE_API_TRUST",
-  ]) {
-    delete copy[name];
-  }
+  for (const name of CREDENTIAL_ENV_NAMES) delete copy[name];
   return copy;
 }
 
@@ -579,8 +585,16 @@ export async function deploy(
         );
         return { candidates: [], deleted: [], skipped: true };
       }
-      // Anything else (confirmation declined, policy errors, transport
-      // failures) must surface rather than be reported as "no permission".
+      // A declined confirmation is not a deploy failure: make it unambiguous
+      // that everything above already happened and nothing was deleted, so the
+      // user does not re-run (and re-apply) the whole deployment.
+      const message = error instanceof Error ? error.message : String(error);
+      if (/^CLEANUP_CONFIRMATION_REQUIRED/.test(message))
+        throw new Error(
+          `${message} — the deployment itself completed, but no device was deleted; re-run with --yes to prune offline devices`,
+        );
+      // Anything else (policy errors, transport failures) must surface rather
+      // than be reported as "no permission".
       throw error;
     }
   })();

@@ -302,7 +302,8 @@ export async function updateCacheBinary(
   };
 }
 
-async function withDownloadLock<T>(
+/** Exported for tests: serialises a unit of work behind `.download.lock`. */
+export async function withDownloadLock<T>(
   label: string,
   fn: () => Promise<T>,
 ): Promise<T> {
@@ -333,6 +334,9 @@ async function withDownloadLock<T>(
   );
 }
 
+// A lock older than this is assumed abandoned even when its pid cannot be
+// probed (recycled pid). Downloads use pid+timestamp temp paths, so a lock
+// broken too early costs a duplicate download, never a corrupt install.
 const LOCK_STALE_MS = 10 * 60 * 1000;
 
 function pidAlive(pid: number): boolean {
@@ -345,7 +349,11 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-/** Removes a lock file whose owner is dead or which has aged out. */
+/**
+ * Removes a lock file whose owner is dead or which has aged out. Returns true
+ * only when the lock is actually gone, so a lock we could not inspect is left
+ * alone (and the caller keeps waiting) instead of being reported as cleared.
+ */
 async function clearStaleLock(lockPath: string): Promise<boolean> {
   try {
     const raw = await readFile(lockPath, "utf8");
@@ -357,9 +365,10 @@ async function clearStaleLock(lockPath: string): Promise<boolean> {
       return true;
     }
     return false;
-  } catch {
-    // Lock vanished (or is unreadable): retry the create immediately.
-    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // Already released by the owner: retry the create right away.
+    return code === "ENOENT";
   }
 }
 

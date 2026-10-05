@@ -149,8 +149,11 @@ function simpleDiff(before: string, after: string): string {
   if (before === after) return "";
   const a = before.split(/\r?\n/);
   const b = after.split(/\r?\n/);
-  // Guard against quadratic blowup on large policies.
-  if (a.length * b.length > 4_000_000) return `~ ${before} -> ${after}`;
+  // Guard against quadratic blowup on large policies: the table below holds
+  // one cell per line pair, so cap the product and fall back to a summary that
+  // names the sizes instead of inlining two whole documents in the envelope.
+  if (a.length * b.length > 1_000_000)
+    return `~ policy differs (${a.length} lines -> ${b.length} lines) and is too large to diff line by line; review the file and the remote policy directly`;
   const lcs: number[][] = Array.from({ length: a.length + 1 }, () =>
     new Array<number>(b.length + 1).fill(0),
   );

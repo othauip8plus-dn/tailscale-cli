@@ -1381,16 +1381,9 @@ program
         // 2. From --map flags
         if (options.map && options.map.length > 0) {
           for (const m of options.map) {
-            const parsed = parseRelayMapping(
-              m,
-              options.targetHost ?? "127.0.0.1",
+            mappings.push(
+              parseRelayMapping(m, options.targetHost ?? "127.0.0.1"),
             );
-            // Honour --host: without this, startMultiRelay falls back to
-            // 127.0.0.1 while the envelope advertises 0.0.0.0.
-            mappings.push({
-              ...parsed,
-              listenHost: parsed.listenHost ?? options.host ?? "0.0.0.0",
-            });
           }
         }
 
@@ -1443,7 +1436,15 @@ program
 
         const actions: string[] = [];
 
-        const multiRelay = await startMultiRelay(mappings, {
+        // Apply --host uniformly. Mappings parsed from --map/--file without an
+        // explicit listenHost would otherwise bind 127.0.0.1 inside
+        // startMultiRelay while the envelope advertises 0.0.0.0.
+        const resolvedMappings: RelayMapping[] = mappings.map((m) => ({
+          ...m,
+          listenHost: m.listenHost ?? options.host ?? "0.0.0.0",
+        }));
+
+        const multiRelay = await startMultiRelay(resolvedMappings, {
           onConnection: (mapping, addr) => {
             if (!program.opts<{ json?: boolean }>().json) {
               console.error(
@@ -1460,9 +1461,9 @@ program
           },
         });
 
-        for (const m of mappings) {
+        for (const m of resolvedMappings) {
           actions.push(
-            `TCP relay listening on ${m.listenHost ?? options.host ?? "0.0.0.0"}:${m.listenPort} -> ${m.targetHost}:${m.targetPort}`,
+            `TCP relay listening on ${m.listenHost ?? "0.0.0.0"}:${m.listenPort} -> ${m.targetHost}:${m.targetPort}`,
           );
         }
 
@@ -1539,8 +1540,14 @@ program
           "relay",
           {
             status: "running",
-            count: mappings.length,
-            mappings,
+            count: resolvedMappings.length,
+            // Per-mapping credentials come from --file; never echo them.
+            mappings: resolvedMappings.map((m) => ({
+              ...m,
+              ...(m.password !== undefined
+                ? { password: maskSecret(m.password) }
+                : {}),
+            })),
             tailscaleServe: Boolean(wantsServe),
             tailscaleFunnel: Boolean(wantsFunnel),
           },
@@ -1836,8 +1843,12 @@ program
           Boolean(program.opts<{ json?: boolean }>().json);
         // Permission and configuration failures are non-retryable: retrying
         // them forever hides the real cause behind an endless respawn loop.
+        // Only codes nexql-mcp helpers actually raise belong here —
+        // NEXQL_MCP_DB_UNREACHABLE is deliberately absent (the DB may boot
+        // later), while a missing binary, a bound port or a child that dies
+        // before serving can never succeed on retry.
         const isFatalNexqlError = (msg: string): boolean =>
-          /NEXQL_MCP_PORT_IN_USE|NEXQL_MCP_EXITED_EARLY|NEXQL_MCP_TOKEN_INVALID|NEXQL_MCP_PROFILE_INVALID/.test(
+          /NEXQL_MCP_PORT_IN_USE|NEXQL_MCP_EXITED_EARLY|NEXQL_MCP_NOT_FOUND|NEXQL_MCP_SERVE_FAILED/.test(
             msg,
           );
 
@@ -2111,6 +2122,11 @@ program
         // mid-flight (e.g. the DB machine shuts down and comes back).
         const retryInterval = dbRetryInterval;
         let stopping = false;
+        // Set when a non-retryable spawn failure tears the command down; the
+        // shutdown waiter below rethrows it so the command reports the real
+        // cause instead of exiting 0 with a dead MCP endpoint.
+        let fatalError: unknown;
+        let requestShutdown: (() => void) | undefined;
 
         // Collect profile names from mappings for --profile flag
         const profileNames = resolvedMappings.map(
@@ -2187,27 +2203,35 @@ program
         };
 
         const supervisor = (async (): Promise<void> => {
-          let spawned = await trySpawn();
-          while (!stopping) {
-            if (spawned === undefined) {
-              await sleepMs(retryInterval);
-              spawned = await trySpawn();
-              continue;
+          // Never reject: nothing awaits this promise until shutdown, so a
+          // rejection would surface as an unhandled rejection and crash the
+          // process instead of reporting the error through `fail()`.
+          try {
+            let spawned = await trySpawn();
+            while (!stopping) {
+              if (spawned === undefined) {
+                await sleepMs(retryInterval);
+                spawned = await trySpawn();
+                continue;
+              }
+              try {
+                await spawned.waitForExit;
+              } catch {
+                // waitForExit always resolves; a throw here is unexpected, so
+                // simply respawn on the next iteration.
+              }
+              if (stopping) break;
+              if (!quietJson()) {
+                console.error(
+                  "[relay-mcp-postgres] nexql-mcp exited (database went down); respawning",
+                );
+              }
+              nexqlPid = undefined;
+              spawned = undefined;
             }
-            try {
-              await spawned.waitForExit;
-            } catch {
-              // waitForExit always resolves; a throw here is unexpected, so
-              // simply respawn on the next iteration.
-            }
-            if (stopping) break;
-            if (!quietJson()) {
-              console.error(
-                "[relay-mcp-postgres] nexql-mcp exited (database went down); respawning",
-              );
-            }
-            nexqlPid = undefined;
-            spawned = undefined;
+          } catch (error) {
+            fatalError = error;
+            requestShutdown?.();
           }
         })();
 
@@ -2285,6 +2309,12 @@ program
             ...(process.env.OAUTH_CLIENT_SECRET
               ? { clientSecret: process.env.OAUTH_CLIENT_SECRET }
               : {}),
+            // Never silent: a wrapper that fails to bind must not look healthy.
+            onError: (message) => {
+              console.error(
+                `[relay-mcp-postgres] oauth-wrapper unavailable: ${message}`,
+              );
+            },
           });
           if (!quietJson())
             console.error(
@@ -2312,12 +2342,27 @@ program
                 console.error(
                   `[relay-mcp-postgres] tailscale ${wantsFunnel ? "funnel" : "serve"} reconfigured to oauth-wrapper :${oauthPort}`,
                 );
-            } catch {}
+            } catch (error) {
+              console.error(
+                `[relay-mcp-postgres] tailscale serve/funnel not configured for oauth-wrapper :${oauthPort}: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            }
           }
-        } catch {}
+        } catch (error) {
+          console.error(
+            `[relay-mcp-postgres] oauth-wrapper not started on :${oauthPort}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
 
         await new Promise<void>((resolve) => {
+          let settled = false;
           const shutdown = (): void => {
+            if (settled) return;
+            settled = true;
             stopping = true;
             try {
               oauthServer?.close();
@@ -2339,9 +2384,15 @@ program
               () => resolve(),
             );
           };
+          requestShutdown = shutdown;
           process.on("SIGINT", shutdown);
           process.on("SIGTERM", shutdown);
+          // A fatal spawn failure can land before this promise was created.
+          if (fatalError !== undefined) shutdown();
         });
+        // Non-retryable failure: report it instead of exiting 0 with a
+        // supervisor loop that has already given up.
+        if (fatalError !== undefined) throw fatalError;
       } catch (error) {
         await multiRelay?.close().catch(() => {});
         if (nexqlPid !== undefined) {

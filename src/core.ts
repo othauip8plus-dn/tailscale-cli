@@ -144,25 +144,28 @@ export function loadConfigFile(
   return undefined;
 }
 
-const VALID_PROFILES: readonly string[] = [
-  "ci",
-  "container",
-  "vm",
-  "windows",
-  "dev",
-  "funnel-app",
-  "subnet-router",
-  "exit-node",
-];
+/** Keyed by `Profile` so adding a profile without listing it here fails to compile. */
+const VALID_PROFILES = {
+  ci: true,
+  container: true,
+  vm: true,
+  windows: true,
+  dev: true,
+  "funnel-app": true,
+  "subnet-router": true,
+  "exit-node": true,
+} as const satisfies Record<Profile, true>;
 
 function profileFromEnvironment(env: NodeJS.ProcessEnv): Profile {
   const configured = env.TS_PROFILE?.trim();
   if (configured) {
     // Previously cast unchecked, so TS_PROFILE=prod silently disabled every
     // profile-conditional behaviour (CI auto-cleanup, exit-node, …).
-    if (!VALID_PROFILES.includes(configured))
+    // Object.hasOwn, not `in`: "toString"/"constructor" are inherited keys
+    // and would pass an `in` check.
+    if (!Object.hasOwn(VALID_PROFILES, configured))
       throw new Error(
-        `PROFILE_INVALID: expected one of ${VALID_PROFILES.join(", ")}, got "${configured}"`,
+        `PROFILE_INVALID: expected one of ${Object.keys(VALID_PROFILES).join(", ")}, got "${configured}"`,
       );
     return configured as Profile;
   }
