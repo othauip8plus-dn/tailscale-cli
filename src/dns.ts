@@ -59,6 +59,11 @@ export async function funnelPublicDnsPropagated(
   hostname: string,
   timeoutSeconds: number,
 ): Promise<DnsPropagationResult> {
+  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
+    throw new Error(
+      `VERIFY_TIMEOUT_INVALID: expected a positive number of seconds, got ${timeoutSeconds}`,
+    );
+  }
   const deadline = Date.now() + timeoutSeconds * 1000;
   let attempts = 0;
   while (Date.now() < deadline) {

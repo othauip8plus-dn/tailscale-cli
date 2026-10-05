@@ -7,6 +7,7 @@ import {
   readdir,
   rename,
   rm,
+  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
@@ -320,12 +321,46 @@ async function withDownloadLock<T>(
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // A crashed downloader leaves the lock behind forever, permanently
+      // blocking provisioning on this machine. Break the lock when its owner
+      // is gone or it is older than LOCK_STALE_MS.
+      if (await clearStaleLock(lockPath)) continue;
       await sleep(250);
     }
   }
   throw new Error(
     `BIN_LOCKED: another download (${label}) is already in progress in ${dir}`,
   );
+}
+
+const LOCK_STALE_MS = 10 * 60 * 1000;
+
+function pidAlive(pid: number): boolean {
+  try {
+    // Signal 0 performs the permission/existence check without delivering.
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Removes a lock file whose owner is dead or which has aged out. */
+async function clearStaleLock(lockPath: string): Promise<boolean> {
+  try {
+    const raw = await readFile(lockPath, "utf8");
+    const pid = Number.parseInt(raw.split("\n")[0] ?? "", 10);
+    const age = Date.now() - (await stat(lockPath)).mtimeMs;
+    const ownerDead = Number.isInteger(pid) && pid > 0 && !pidAlive(pid);
+    if (ownerDead || age > LOCK_STALE_MS) {
+      await rm(lockPath, { force: true });
+      return true;
+    }
+    return false;
+  } catch {
+    // Lock vanished (or is unreadable): retry the create immediately.
+    return true;
+  }
 }
 
 export interface WindowsInstallResult {

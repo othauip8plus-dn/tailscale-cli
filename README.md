@@ -238,6 +238,8 @@ npx tailsacle-cli cleanup --yes --json
 
 Cleanup is restricted to devices that are offline beyond `TS_CLEANUP_OFFLINE_AFTER` and match the configured hostname/tag set. Protected device names can be supplied through `TS_PROTECTED_DEVICES`.
 
+Deleting a device is irreversible, so confirmation is always required: pass `--yes` for non-interactive runs, or confirm the listed candidates at the interactive prompt. `deploy --cleanup` follows the same rule — it no longer pre-approves the deletion, so without `--yes` it prompts on a TTY and otherwise fails with `CLEANUP_CONFIRMATION_REQUIRED`. If some devices are deleted and others fail, the command reports `CLEANUP_PARTIAL_FAILURE` together with the exact IDs that were removed rather than claiming nothing was deleted.
+
 ## Configuration
 
 | Variable | Purpose |

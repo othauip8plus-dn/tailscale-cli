@@ -46,7 +46,9 @@ auto-detecting.
 
 ## Guarded operations
 
-Policy writes require a fetched remote policy, diff, remote validation, local backup, ETag-protected write and a final confirmation. Provisioning merges into the existing HuJSON text so comments and trailing commas are preserved (`policy.hujson` sync writes the file verbatim). Device cleanup requires an exact hostname/tag match (never substring), devices without `lastSeen` are never treated as offline, and cleanup permission failures are non-fatal in deploy. In CI/non-TTY environments use `--yes` explicitly.
+Policy writes require a fetched remote policy, diff, remote validation, local backup, ETag-protected write and a final confirmation. Provisioning merges into the existing HuJSON text so comments and trailing commas are preserved (`policy.hujson` sync writes the file verbatim). The diff is computed on canonically-parsed documents, so a commented HuJSON file that matches the remote policy correctly reports `changed: false`, and the post-write read-back is compared against the requested policy and fails with `POLICY_VERIFY_FAILED` when it does not match. Device cleanup requires an exact hostname/tag match (never substring), devices without `lastSeen` are never treated as offline, and cleanup permission failures are non-fatal in deploy. In CI/non-TTY environments use `--yes` explicitly.
+
+Device deletion always requires confirmation: `--yes` for non-interactive runs, an interactive prompt otherwise. A partially-failed cleanup reports `CLEANUP_PARTIAL_FAILURE` with the IDs that were actually removed. `CLEANUP_SKIPPED` (no permission) is only reported for a genuine 401/403 — every other failure surfaces as an error.
 
 ## Funnel, Serve, TCP Relay and DNS
 
@@ -117,8 +119,9 @@ Notes:
 - Config is JSON/JSONC (comments + trailing commas supported). `args` example: `["relay", "--file", "./relays.jsonc"]` for multi-port relay daemons.
 - Linux `--user` services need `loginctl enable-linger <user>` to auto-start on boot — the CLI warns when it is missing.
 - Linux system services require root (`SERVICE_REQUIRES_ADMIN`); Windows SCM requires an elevated terminal (Administrator). `--scheduler` on Windows needs no admin but only starts after login (Task Scheduler, weaker crash-restart than SCM).
-- Env values that look like secrets (`tskey-`, `secret`, `token`, `password`, `api_key`, `credential`) are masked as `****` in logs.
-- Errors: `SERVICE_NAME_INVALID`, `SERVICE_CONFIG_MISSING_FIELD`, `SERVICE_WORKDIR_NOT_FOUND`, `SERVICE_SCRIPT_NOT_FOUND`, `SERVICE_CONFIG_NOT_FOUND`, `SERVICE_ALREADY_EXISTS`, `SERVICE_NOT_FOUND`, `SERVICE_PLATFORM_UNSUPPORTED`, `SERVICE_SYSTEMCTL_FAILED`, `SERVICE_WINDOWS_NATIVE_REQUIRED`, `SERVICE_CONFIRMATION_REQUIRED`.
+- Env values whose **key or value** looks like a secret (`tskey-`, `secret`, `token`, `password`, `api_key`, `credential`, or a `scheme://user:pass@host` connection string) are masked as `****` in logs.
+- `user`, `script`, `workingDir`, `args`, `env` values and `env` keys are rejected when they contain newlines, NUL or a double quote. Service configs are rendered verbatim into systemd unit files, launchd plists and Windows `.cmd` scripts, so such characters would otherwise allow injecting directives that run as root.
+- Errors: `SERVICE_NAME_INVALID`, `SERVICE_CONFIG_MISSING_FIELD`, `SERVICE_WORKDIR_NOT_FOUND`, `SERVICE_SCRIPT_NOT_FOUND`, `SERVICE_CONFIG_NOT_FOUND`, `SERVICE_ALREADY_EXISTS`, `SERVICE_NOT_FOUND`, `SERVICE_PLATFORM_UNSUPPORTED`, `SERVICE_SYSTEMCTL_FAILED`, `SERVICE_WINDOWS_NATIVE_REQUIRED`, `SERVICE_CONFIRMATION_REQUIRED`, `SERVICE_FIELD_INVALID`, `SERVICE_ENV_KEY_INVALID`.
 
 ## Automation
 

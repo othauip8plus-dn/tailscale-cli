@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { registryAdd, registryRemove, registryList } from "./registry.js";
+import { assertNoBatchUnsafe } from "./config.js";
 import { cliEntrypoint, nodeExecutable } from "./linux.js";
 import type {
   InstallOptions,
@@ -59,11 +60,22 @@ function taskCommand(config: ServiceConfig, logDir: string): string {
   // B11 fix: escape literal % in all arguments so cmd.exe does not expand
   // them as environment-variable references (e.g. a token containing %FOO%
   // would otherwise be silently replaced by the value of %FOO%).
-  const escapeBatchArg = (s: string): string => `"${s.replace(/%/g, "%%")}"`;
+  // Within a cmd.exe quoted token only `%` is still expanded, so `& | < >`
+  // are already inert. A literal `"` however terminates the token early and
+  // cannot be escaped at all, so it is rejected during config validation
+  // (`assertNoBatchUnsafe`); assert it here too as defence in depth.
+  const escapeBatchArg = (s: string): string => {
+    assertNoBatchUnsafe(s);
+    return `"${s.replace(/%/g, "%%")}"`;
+  };
   const innerArgs = execArgs.map(escapeBatchArg).join(" ");
   // Also escape % in logDir / workingDir paths (rare but possible).
-  const safeLogDir = logDir.replace(/%/g, "%%");
-  const safeWorkingDir = config.workingDir.replace(/%/g, "%%");
+  const escapeBatchPath = (s: string): string => {
+    assertNoBatchUnsafe(s);
+    return s.replace(/%/g, "%%");
+  };
+  const safeLogDir = escapeBatchPath(logDir);
+  const safeWorkingDir = escapeBatchPath(config.workingDir);
   const safeOutLog = `${safeLogDir}\\out.log`;
   const safeErrLog = `${safeLogDir}\\err.log`;
   const content = `@echo off\r\nif not exist "${safeLogDir}" mkdir "${safeLogDir}"\r\ncd /d "${safeWorkingDir}"\r\n"${nodeExecutable()}" ${innerArgs} >>"${safeOutLog}" 2>>"${safeErrLog}"\r\n`;

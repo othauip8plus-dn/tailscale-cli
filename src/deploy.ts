@@ -9,6 +9,7 @@ import { ApiError, TailscaleApiClient } from "./api.js";
 import type { CreatedAuthKey } from "./api.js";
 import { tailscaleVersion, TailscaleLocal } from "./tailscale.js";
 import { cleanup as runCleanup } from "./cleanup.js";
+import { CleanupPartialFailureError } from "./cleanup.js";
 import {
   ensureDeployTags,
   ensureFunnelAccess,
@@ -150,11 +151,20 @@ function deviceFromStatus(status: unknown): Device | Record<string, unknown> {
 
 function redactEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const copy = { ...env };
-  delete copy.TS_API_KEY;
-  delete copy.TS_ACCESS_TOKEN;
-  delete copy.TS_CLIENT_SECRET;
-  delete copy.TS_OAUTH_CLIENT_SECRET;
-  delete copy.TS_AUTH_KEY;
+  for (const name of [
+    "TS_API_KEY",
+    "TS_ACCESS_TOKEN",
+    "TS_API_TOKEN",
+    "TS_CLIENT_SECRET",
+    "TS_OAUTH_CLIENT_SECRET",
+    "TS_AUTH_KEY",
+    "TS_TRUST_CREDENTIAL",
+    "TS_API_TRUST",
+    "TAILSCALE_TRUST_CREDENTIAL",
+    "TAILSCALE_API_TRUST",
+  ]) {
+    delete copy[name];
+  }
   return copy;
 }
 
@@ -535,22 +545,43 @@ export async function deploy(
         "CLEANUP_EXPLICIT: --cleanup was passed, so offline-device pruning runs on this profile (auto-cleanup otherwise only defaults to CI/container)",
       );
     try {
-      const result = await runCleanup(config, {
-        dryRun: false,
-        yes: true,
-        ...(options.credentialEnvName
-          ? { credentialEnvName: options.credentialEnvName }
-          : {}),
-      });
+      const result = await runCleanup(
+        { ...config, tags: resolveTags(config).tags },
+        {
+          dryRun: false,
+          // Never silently pre-approve a destructive delete: without --yes the
+          // user must confirm on a TTY.
+          yes: options.yes,
+          ...(options.credentialEnvName
+            ? { credentialEnvName: options.credentialEnvName }
+            : {}),
+        },
+      );
       return {
         candidates: result.candidates.map((d) => d.id),
         deleted: result.deleted,
       };
-    } catch {
-      warnings.push(
-        "CLEANUP_SKIPPED: no device cleanup permission; deploy succeeded without pruning offline devices",
-      );
-      return { candidates: [], deleted: [], skipped: true };
+    } catch (error) {
+      if (error instanceof CleanupPartialFailureError) {
+        // Devices were permanently deleted — report exactly which ones.
+        warnings.push(`CLEANUP_PARTIAL: ${error.message}`);
+        return {
+          candidates: error.candidates.map((d) => d.id),
+          deleted: error.deleted,
+        };
+      }
+      if (
+        error instanceof ApiError &&
+        (error.status === 401 || error.status === 403)
+      ) {
+        warnings.push(
+          "CLEANUP_SKIPPED: no device cleanup permission; deploy succeeded without pruning offline devices",
+        );
+        return { candidates: [], deleted: [], skipped: true };
+      }
+      // Anything else (confirmation declined, policy errors, transport
+      // failures) must surface rather than be reported as "no permission".
+      throw error;
     }
   })();
 

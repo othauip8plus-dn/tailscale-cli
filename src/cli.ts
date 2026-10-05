@@ -1381,9 +1381,16 @@ program
         // 2. From --map flags
         if (options.map && options.map.length > 0) {
           for (const m of options.map) {
-            mappings.push(
-              parseRelayMapping(m, options.targetHost ?? "127.0.0.1"),
+            const parsed = parseRelayMapping(
+              m,
+              options.targetHost ?? "127.0.0.1",
             );
+            // Honour --host: without this, startMultiRelay falls back to
+            // 127.0.0.1 while the envelope advertises 0.0.0.0.
+            mappings.push({
+              ...parsed,
+              listenHost: parsed.listenHost ?? options.host ?? "0.0.0.0",
+            });
           }
         }
 
@@ -1545,12 +1552,14 @@ program
 
         // Keep process alive for relay unless interrupted
         await new Promise<void>((resolve) => {
-          process.on("SIGINT", () => {
-            void multiRelay.close().then(() => resolve());
-          });
-          process.on("SIGTERM", () => {
-            void multiRelay.close().then(() => resolve());
-          });
+          const stop = (): void => {
+            void multiRelay.close().then(
+              () => resolve(),
+              () => resolve(),
+            );
+          };
+          process.on("SIGINT", stop);
+          process.on("SIGTERM", stop);
         });
       } catch (error) {
         fail("relay", error, start);
@@ -1825,6 +1834,12 @@ program
         let retryCount = 0;
         const quietJson = (): boolean =>
           Boolean(program.opts<{ json?: boolean }>().json);
+        // Permission and configuration failures are non-retryable: retrying
+        // them forever hides the real cause behind an endless respawn loop.
+        const isFatalNexqlError = (msg: string): boolean =>
+          /NEXQL_MCP_PORT_IN_USE|NEXQL_MCP_EXITED_EARLY|NEXQL_MCP_TOKEN_INVALID|NEXQL_MCP_PROFILE_INVALID/.test(
+            msg,
+          );
 
         const connectTimeoutMs = options.connectTimeout
           ? Number(options.connectTimeout)
@@ -2149,10 +2164,16 @@ program
             }
             return { pid: started.pid, waitForExit: started.waitForExit };
           } catch (error) {
+            // Count every failure: incrementing inside the `!quietJson()`
+            // block meant --json never advanced the counter, so a permanently
+            // fatal error was retried forever.
+            retryCount += 1;
+            const msg = error instanceof Error ? error.message : String(error);
+            if (isFatalNexqlError(msg)) {
+              nexqlPid = undefined;
+              throw error;
+            }
             if (!quietJson()) {
-              retryCount += 1;
-              const msg =
-                error instanceof Error ? error.message : String(error);
               if (msg !== lastRetryMessage || retryCount % 10 === 0) {
                 lastRetryMessage = msg;
                 console.error(
@@ -2250,7 +2271,7 @@ program
         const publicUrl =
           process.env.PUBLIC_URL ??
           `https://${process.env.TS_HOSTNAME ?? "mcp-postgres"}.${process.env.TS_TAILNET && process.env.TS_TAILNET !== "-" ? process.env.TS_TAILNET : "tailadac87.ts.net"}`;
-        let oauthServer: { close: () => void } | undefined;
+        let oauthServer: ReturnType<typeof startOAuthWrapper> | undefined;
         try {
           const { startOAuthWrapper } = await import("./oauth-wrapper.js");
           oauthServer = startOAuthWrapper({
@@ -2300,6 +2321,9 @@ program
             stopping = true;
             try {
               oauthServer?.close();
+              // Keep-alive MCP sessions otherwise hold the server open and
+              // Ctrl+C never completes.
+              oauthServer?.closeAllConnections?.();
             } catch {}
             void Promise.all([
               multiRelay?.close().catch(() => {}),
@@ -2310,7 +2334,10 @@ program
                 }
               })(),
               supervisor,
-            ]).then(() => resolve());
+            ]).then(
+              () => resolve(),
+              () => resolve(),
+            );
           };
           process.on("SIGINT", shutdown);
           process.on("SIGTERM", shutdown);
@@ -2439,11 +2466,17 @@ program
     const start = performance.now();
     try {
       const credentialEnv = resolvedCredentialEnv();
-      const result = await cleanup(resolveConfig(configEnv()), {
-        dryRun: Boolean(options.dryRun),
-        yes: Boolean(options.yes),
-        ...(credentialEnv ? { credentialEnvName: credentialEnv } : {}),
-      });
+      const cleanupConfig = resolveConfig(configEnv());
+      // Match against the same resolved tags deploy provisions, so an
+      // auto-tagged run does not widen the delete set to "no tag constraint".
+      const result = await cleanup(
+        { ...cleanupConfig, tags: resolveTags(cleanupConfig).tags },
+        {
+          dryRun: Boolean(options.dryRun),
+          yes: Boolean(options.yes),
+          ...(credentialEnv ? { credentialEnvName: credentialEnv } : {}),
+        },
+      );
       emit(
         "cleanup",
         result,

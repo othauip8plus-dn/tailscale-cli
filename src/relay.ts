@@ -67,6 +67,10 @@ export interface MultiRelayInstance {
  *  "[fd7a::1]:5432"    → host="fd7a::1" port=5432
  *  "[::1]:5432"        → host="::1" port=5432
  */
+export function isValidPort(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 65535;
+}
+
 function splitHostPort(token: string): { host: string; port: number } {
   const trimmed = token.trim();
   // IPv6 bracketed: [host]:port
@@ -331,9 +335,11 @@ export function loadRelayConfigFile(filePath: string): RelayMapping[] {
         targetHost = host;
         targetPort = port;
       }
-      if (!Number.isFinite(listenPort) || !Number.isFinite(targetPort)) {
+      // Number.isFinite alone accepts 0, -1, 99999 and 8080.5, which then
+      // reach server.listen / net.connect as an opaque EINVAL.
+      if (!isValidPort(listenPort) || !isValidPort(targetPort)) {
         throw new Error(
-          `RELAY_CONFIG_ITEM_INVALID: invalid listen or target port in ${JSON.stringify(item)}`,
+          `RELAY_CONFIG_ITEM_INVALID: listen and target ports must be integers in 1-65535, got ${listenPort}/${targetPort} in ${JSON.stringify(item)}`,
         );
       }
       mappings.push({
@@ -377,7 +383,10 @@ export function startRelay(options: RelayOptions): Promise<RelayInstance> {
       onError,
     } = options;
 
+    const sockets = new Set<net.Socket>();
     const server = net.createServer((clientSocket) => {
+      sockets.add(clientSocket);
+      clientSocket.once("close", () => sockets.delete(clientSocket));
       const clientAddr = `${clientSocket.remoteAddress ?? "unknown"}:${clientSocket.remotePort ?? 0}`;
       if (onConnection) {
         onConnection(clientAddr);
@@ -448,16 +457,29 @@ export function startRelay(options: RelayOptions): Promise<RelayInstance> {
       });
     });
 
-    server.once("error", (err) => {
+    const onListenError = (err: Error): void => {
       reject(err);
-    });
+    };
+    server.once("error", onListenError);
 
     server.listen(listenPort, listenHost, () => {
+      // The promise is settled now: a later `error` must be reported, not
+      // silently swallowed by a reject() that can no longer take effect
+      // (which would also leave the next `error` unhandled and crash the CLI).
+      server.removeListener("error", onListenError);
+      server.on("error", (err: Error) => {
+        if (onError) onError(err);
+      });
       resolve({
         server,
         close: () =>
           new Promise<void>((res, rej) => {
             server.close((err) => (err ? rej(err) : res()));
+            // `server.close` only stops accepting: the callback waits for every
+            // open connection, and relay clients hold long-lived sessions, so
+            // destroy them explicitly or shutdown hangs after Ctrl+C.
+            for (const socket of sockets) socket.destroy();
+            sockets.clear();
           }),
         connectionsCount: () =>
           new Promise<number>((res, rej) => {
