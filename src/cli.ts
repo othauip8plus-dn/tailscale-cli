@@ -1436,7 +1436,15 @@ program
 
         const actions: string[] = [];
 
-        const multiRelay = await startMultiRelay(mappings, {
+        // Apply --host uniformly. Mappings parsed from --map/--file without an
+        // explicit listenHost would otherwise bind 127.0.0.1 inside
+        // startMultiRelay while the envelope advertises 0.0.0.0.
+        const resolvedMappings: RelayMapping[] = mappings.map((m) => ({
+          ...m,
+          listenHost: m.listenHost ?? options.host ?? "0.0.0.0",
+        }));
+
+        const multiRelay = await startMultiRelay(resolvedMappings, {
           onConnection: (mapping, addr) => {
             if (!program.opts<{ json?: boolean }>().json) {
               console.error(
@@ -1453,9 +1461,9 @@ program
           },
         });
 
-        for (const m of mappings) {
+        for (const m of resolvedMappings) {
           actions.push(
-            `TCP relay listening on ${m.listenHost ?? options.host ?? "0.0.0.0"}:${m.listenPort} -> ${m.targetHost}:${m.targetPort}`,
+            `TCP relay listening on ${m.listenHost ?? "0.0.0.0"}:${m.listenPort} -> ${m.targetHost}:${m.targetPort}`,
           );
         }
 
@@ -1532,8 +1540,14 @@ program
           "relay",
           {
             status: "running",
-            count: mappings.length,
-            mappings,
+            count: resolvedMappings.length,
+            // Per-mapping credentials come from --file; never echo them.
+            mappings: resolvedMappings.map((m) => ({
+              ...m,
+              ...(m.password !== undefined
+                ? { password: maskSecret(m.password) }
+                : {}),
+            })),
             tailscaleServe: Boolean(wantsServe),
             tailscaleFunnel: Boolean(wantsFunnel),
           },
@@ -1545,12 +1559,14 @@ program
 
         // Keep process alive for relay unless interrupted
         await new Promise<void>((resolve) => {
-          process.on("SIGINT", () => {
-            void multiRelay.close().then(() => resolve());
-          });
-          process.on("SIGTERM", () => {
-            void multiRelay.close().then(() => resolve());
-          });
+          const stop = (): void => {
+            void multiRelay.close().then(
+              () => resolve(),
+              () => resolve(),
+            );
+          };
+          process.on("SIGINT", stop);
+          process.on("SIGTERM", stop);
         });
       } catch (error) {
         fail("relay", error, start);
@@ -1825,6 +1841,16 @@ program
         let retryCount = 0;
         const quietJson = (): boolean =>
           Boolean(program.opts<{ json?: boolean }>().json);
+        // Permission and configuration failures are non-retryable: retrying
+        // them forever hides the real cause behind an endless respawn loop.
+        // Only codes nexql-mcp helpers actually raise belong here —
+        // NEXQL_MCP_DB_UNREACHABLE is deliberately absent (the DB may boot
+        // later), while a missing binary, a bound port or a child that dies
+        // before serving can never succeed on retry.
+        const isFatalNexqlError = (msg: string): boolean =>
+          /NEXQL_MCP_PORT_IN_USE|NEXQL_MCP_EXITED_EARLY|NEXQL_MCP_NOT_FOUND|NEXQL_MCP_SERVE_FAILED/.test(
+            msg,
+          );
 
         const connectTimeoutMs = options.connectTimeout
           ? Number(options.connectTimeout)
@@ -2096,6 +2122,11 @@ program
         // mid-flight (e.g. the DB machine shuts down and comes back).
         const retryInterval = dbRetryInterval;
         let stopping = false;
+        // Set when a non-retryable spawn failure tears the command down; the
+        // shutdown waiter below rethrows it so the command reports the real
+        // cause instead of exiting 0 with a dead MCP endpoint.
+        let fatalError: unknown;
+        let requestShutdown: (() => void) | undefined;
 
         // Collect profile names from mappings for --profile flag
         const profileNames = resolvedMappings.map(
@@ -2149,10 +2180,16 @@ program
             }
             return { pid: started.pid, waitForExit: started.waitForExit };
           } catch (error) {
+            // Count every failure: incrementing inside the `!quietJson()`
+            // block meant --json never advanced the counter, so a permanently
+            // fatal error was retried forever.
+            retryCount += 1;
+            const msg = error instanceof Error ? error.message : String(error);
+            if (isFatalNexqlError(msg)) {
+              nexqlPid = undefined;
+              throw error;
+            }
             if (!quietJson()) {
-              retryCount += 1;
-              const msg =
-                error instanceof Error ? error.message : String(error);
               if (msg !== lastRetryMessage || retryCount % 10 === 0) {
                 lastRetryMessage = msg;
                 console.error(
@@ -2166,27 +2203,35 @@ program
         };
 
         const supervisor = (async (): Promise<void> => {
-          let spawned = await trySpawn();
-          while (!stopping) {
-            if (spawned === undefined) {
-              await sleepMs(retryInterval);
-              spawned = await trySpawn();
-              continue;
+          // Never reject: nothing awaits this promise until shutdown, so a
+          // rejection would surface as an unhandled rejection and crash the
+          // process instead of reporting the error through `fail()`.
+          try {
+            let spawned = await trySpawn();
+            while (!stopping) {
+              if (spawned === undefined) {
+                await sleepMs(retryInterval);
+                spawned = await trySpawn();
+                continue;
+              }
+              try {
+                await spawned.waitForExit;
+              } catch {
+                // waitForExit always resolves; a throw here is unexpected, so
+                // simply respawn on the next iteration.
+              }
+              if (stopping) break;
+              if (!quietJson()) {
+                console.error(
+                  "[relay-mcp-postgres] nexql-mcp exited (database went down); respawning",
+                );
+              }
+              nexqlPid = undefined;
+              spawned = undefined;
             }
-            try {
-              await spawned.waitForExit;
-            } catch {
-              // waitForExit always resolves; a throw here is unexpected, so
-              // simply respawn on the next iteration.
-            }
-            if (stopping) break;
-            if (!quietJson()) {
-              console.error(
-                "[relay-mcp-postgres] nexql-mcp exited (database went down); respawning",
-              );
-            }
-            nexqlPid = undefined;
-            spawned = undefined;
+          } catch (error) {
+            fatalError = error;
+            requestShutdown?.();
           }
         })();
 
@@ -2250,7 +2295,7 @@ program
         const publicUrl =
           process.env.PUBLIC_URL ??
           `https://${process.env.TS_HOSTNAME ?? "mcp-postgres"}.${process.env.TS_TAILNET && process.env.TS_TAILNET !== "-" ? process.env.TS_TAILNET : "tailadac87.ts.net"}`;
-        let oauthServer: { close: () => void } | undefined;
+        let oauthServer: ReturnType<typeof startOAuthWrapper> | undefined;
         try {
           const { startOAuthWrapper } = await import("./oauth-wrapper.js");
           oauthServer = startOAuthWrapper({
@@ -2264,6 +2309,12 @@ program
             ...(process.env.OAUTH_CLIENT_SECRET
               ? { clientSecret: process.env.OAUTH_CLIENT_SECRET }
               : {}),
+            // Never silent: a wrapper that fails to bind must not look healthy.
+            onError: (message) => {
+              console.error(
+                `[relay-mcp-postgres] oauth-wrapper unavailable: ${message}`,
+              );
+            },
           });
           if (!quietJson())
             console.error(
@@ -2291,15 +2342,33 @@ program
                 console.error(
                   `[relay-mcp-postgres] tailscale ${wantsFunnel ? "funnel" : "serve"} reconfigured to oauth-wrapper :${oauthPort}`,
                 );
-            } catch {}
+            } catch (error) {
+              console.error(
+                `[relay-mcp-postgres] tailscale serve/funnel not configured for oauth-wrapper :${oauthPort}: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            }
           }
-        } catch {}
+        } catch (error) {
+          console.error(
+            `[relay-mcp-postgres] oauth-wrapper not started on :${oauthPort}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
 
         await new Promise<void>((resolve) => {
+          let settled = false;
           const shutdown = (): void => {
+            if (settled) return;
+            settled = true;
             stopping = true;
             try {
               oauthServer?.close();
+              // Keep-alive MCP sessions otherwise hold the server open and
+              // Ctrl+C never completes.
+              oauthServer?.closeAllConnections?.();
             } catch {}
             void Promise.all([
               multiRelay?.close().catch(() => {}),
@@ -2310,11 +2379,20 @@ program
                 }
               })(),
               supervisor,
-            ]).then(() => resolve());
+            ]).then(
+              () => resolve(),
+              () => resolve(),
+            );
           };
+          requestShutdown = shutdown;
           process.on("SIGINT", shutdown);
           process.on("SIGTERM", shutdown);
+          // A fatal spawn failure can land before this promise was created.
+          if (fatalError !== undefined) shutdown();
         });
+        // Non-retryable failure: report it instead of exiting 0 with a
+        // supervisor loop that has already given up.
+        if (fatalError !== undefined) throw fatalError;
       } catch (error) {
         await multiRelay?.close().catch(() => {});
         if (nexqlPid !== undefined) {
@@ -2439,11 +2517,17 @@ program
     const start = performance.now();
     try {
       const credentialEnv = resolvedCredentialEnv();
-      const result = await cleanup(resolveConfig(configEnv()), {
-        dryRun: Boolean(options.dryRun),
-        yes: Boolean(options.yes),
-        ...(credentialEnv ? { credentialEnvName: credentialEnv } : {}),
-      });
+      const cleanupConfig = resolveConfig(configEnv());
+      // Match against the same resolved tags deploy provisions, so an
+      // auto-tagged run does not widen the delete set to "no tag constraint".
+      const result = await cleanup(
+        { ...cleanupConfig, tags: resolveTags(cleanupConfig).tags },
+        {
+          dryRun: Boolean(options.dryRun),
+          yes: Boolean(options.yes),
+          ...(credentialEnv ? { credentialEnvName: credentialEnv } : {}),
+        },
+      );
       emit(
         "cleanup",
         result,

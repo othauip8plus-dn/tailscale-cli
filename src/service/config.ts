@@ -10,8 +10,46 @@ import type {
 
 const NAME_RE = /^[a-zA-Z0-9-]+$/;
 
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 const SECRET_VALUE_RE =
   /tskey-|secret|token|password|passwd|api[_-]?key|credential/i;
+
+/** Connection strings carry the password inline: `postgres://u:p@host/db`. */
+const SECRET_URL_RE = /:\/\/[^/\s:@]+:[^/\s:@]+@/;
+
+/**
+ * Service configs are rendered verbatim into systemd unit files, launchd
+ * plists and Windows `.cmd` scripts. A newline or NUL in any field would let
+ * a config file inject arbitrary directives that systemd executes as root, so
+ * these are rejected at parse time.
+ */
+function assertRenderSafe(field: string, value: string): void {
+  assertNoControlChars(field, value);
+  assertNoBatchUnsafe(value);
+}
+
+function assertNoControlChars(field: string, value: string): void {
+  if (/[\0\r\n]/.test(value)) {
+    throw new Error(
+      `SERVICE_FIELD_INVALID: ${field} must not contain newline or NUL characters`,
+    );
+  }
+}
+
+/**
+ * A literal `"` cannot be escaped inside a cmd.exe quoted token — it always
+ * terminates the token, letting the remainder inject extra commands into the
+ * generated `.cmd`. systemd's `ExecStart=` parser applies the same quoting, so
+ * Windows paths cannot contain `"` anyway: reject it.
+ */
+export function assertNoBatchUnsafe(value: string): void {
+  if (value.includes('"')) {
+    throw new Error(
+      "SERVICE_FIELD_INVALID: values must not contain double quotes (cmd.exe quoting)",
+    );
+  }
+}
 
 const DEFAULT_RESTART: ServiceRestartPolicy = {
   onFailure: true,
@@ -111,14 +149,20 @@ export function validateServiceConfig(
     typeof input.description === "string" && input.description.trim()
       ? input.description.trim()
       : "Tailscale TCP Relay Service - managed by tailsacle-cli";
+  // Rendered verbatim as `Description=` in the systemd unit, so a newline here
+  // is the same directive-injection vector as `user`/`args`. Quotes are common
+  // and harmless in a description, so only control characters are rejected.
+  assertNoControlChars("description", description);
   const user =
     typeof input.user === "string" && input.user.trim()
       ? input.user.trim()
       : "current";
+  assertRenderSafe("user", user);
   const workingDirRaw =
     typeof input.workingDir === "string" && input.workingDir.trim()
       ? input.workingDir.trim()
       : ".";
+  assertRenderSafe("workingDir", workingDirRaw);
   const workingDir = isAbsolute(workingDirRaw)
     ? workingDirRaw
     : resolvePath(baseDir, workingDirRaw);
@@ -129,6 +173,7 @@ export function validateServiceConfig(
   }
   let script: string | undefined;
   if (typeof input.script === "string" && input.script.trim()) {
+    assertRenderSafe("script", input.script);
     script = isAbsolute(input.script)
       ? input.script
       : resolvePath(baseDir, input.script);
@@ -144,7 +189,12 @@ export function validateServiceConfig(
   ) {
     throw new Error("SERVICE_CONFIG_MISSING_FIELD: args");
   }
-  const args = (input.args as string[]).map((a) => a.trim()).filter(Boolean);
+  const args = (input.args as string[])
+    .map((a) => {
+      assertRenderSafe("args", a);
+      return a.trim();
+    })
+    .filter(Boolean);
   const envInput =
     typeof input.env === "object" &&
     input.env !== null &&
@@ -153,7 +203,14 @@ export function validateServiceConfig(
       : {};
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(envInput)) {
-    if (typeof value === "string") env[key] = value;
+    if (typeof value !== "string") continue;
+    if (!ENV_KEY_RE.test(key)) {
+      throw new Error(
+        `SERVICE_ENV_KEY_INVALID: env key must match [A-Za-z_][A-Za-z0-9_]*, got "${key}"`,
+      );
+    }
+    assertRenderSafe(`env.${key}`, value);
+    env[key] = value;
   }
   const restartInput =
     typeof input.restart === "object" && input.restart !== null
@@ -182,6 +239,7 @@ export function validateServiceConfig(
       typeof logInput.dir === "string" && logInput.dir.trim()
         ? logInput.dir
         : "./logs";
+    assertRenderSafe("log.dir", logDirRaw);
     log = {
       dir: isAbsolute(logDirRaw)
         ? logDirRaw
@@ -216,11 +274,22 @@ export function resolveUserName(user: string): string {
 export function maskEnv(env: Record<string, string>): Record<string, string> {
   const masked: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
-    masked[key] = SECRET_VALUE_RE.test(value) ? "****" : value;
+    // The key is the reliable signal: `PGPASSWORD=hunter2` has a secret value
+    // that matches no value pattern, but its key does.
+    masked[key] =
+      SECRET_VALUE_RE.test(key) ||
+      SECRET_VALUE_RE.test(value) ||
+      SECRET_URL_RE.test(value)
+        ? "****"
+        : value;
   }
   return masked;
 }
 
 export function isSecretValue(value: string): boolean {
-  return SECRET_VALUE_RE.test(value);
+  return SECRET_VALUE_RE.test(value) || SECRET_URL_RE.test(value);
+}
+
+export function isSecretKey(key: string): boolean {
+  return SECRET_VALUE_RE.test(key);
 }

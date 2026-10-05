@@ -11,6 +11,8 @@ export interface OAuthWrapperOptions {
   clientId?: string;
   /** Registered OAuth client secret — required to exchange any grant. */
   clientSecret?: string;
+  /** Called when the listener fails asynchronously (e.g. EADDRINUSE). */
+  onError?: (message: string) => void;
 }
 
 interface IssuedCode {
@@ -349,9 +351,24 @@ export function startOAuthWrapper(
     proxyToMcp(req, res);
   });
 
+  // Without an `error` listener, EADDRINUSE is emitted asynchronously and
+  // crashes the process as an unhandled 'error' event — which no try/catch
+  // around the synchronous `startOAuthWrapper` call can intercept.
+  server.on("error", (error: NodeJS.ErrnoException) => {
+    const message =
+      error.code === "EADDRINUSE"
+        ? `OAUTH_PORT_IN_USE: port ${port} is already bound by another process`
+        : `OAUTH_LISTEN_FAILED: ${error.message}`;
+    console.error(`[oauth-wrapper] ${message}`);
+    process.exitCode = 1;
+    options.onError?.(message);
+  });
+
   server.listen(port, "0.0.0.0", () => {
+    // Never log secret material: clientSecret defaults to the MCP bearer
+    // token, so even a prefix disclosure is a real credential leak.
     console.log(
-      `[oauth-wrapper] listening on 0.0.0.0:${port} → ${mcpTarget}, public ${publicUrl}, client ${clientId}, secret ${clientSecret.slice(0, 5)}...`,
+      `[oauth-wrapper] listening on 0.0.0.0:${port} → ${mcpTarget}, public ${publicUrl}, client ${clientId}, secret configured: ${Boolean(clientSecret)}`,
     );
   });
   return server;

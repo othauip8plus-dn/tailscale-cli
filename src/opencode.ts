@@ -590,25 +590,36 @@ export async function runOpenCodeFlow(
       const message = error instanceof Error ? error.message : String(error);
       if (!/funnel.*(not available|node attribute not set)/i.test(message))
         throw error;
-      let lastError = error;
+      let lastError: unknown = error;
+      let recovered = false;
       for (let attempt = 0; attempt < 4; attempt += 1) {
         try {
           await new Promise((resolve) => setTimeout(resolve, 3000));
           await runFunnel();
+          recovered = true;
           break;
         } catch (retryError) {
           lastError = retryError;
         }
       }
-      if (
+      // A retry that eventually succeeds must not be reported as a failure:
+      // policy propagation delays are the reason this loop exists.
+      if (recovered) {
+        deployment.warnings.push(
+          "FUNNEL_PROPAGATED: the funnel node attribute became effective after a retry (~30s policy propagation)",
+        );
+      } else if (
         lastError instanceof Error &&
         /funnel.*(not available|node attribute not set)/i.test(
           lastError.message,
         )
-      )
+      ) {
         throw new Error(
           `FUNNEL_ATTR_REQUIRED: the funnel node attribute was provisioned but is not effective yet; Tailscale policy propagation can take ~30s. ${lastError.message}`,
         );
+      } else {
+        throw lastError;
+      }
     }
     deployment.exposures = [{ target, public: true, https: 443 }];
     const dnsName = await funnelDnsName(local);

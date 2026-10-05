@@ -59,10 +59,42 @@ export function matchReason(
     : `hostname ${config.hostname} (exact, no tag constraint)`;
 }
 
+export interface CleanupResult {
+  candidates: CleanupCandidate[];
+  deleted: string[];
+}
+
+/**
+ * Thrown when some devices were deleted and others failed. Carries the exact
+ * set of IDs already removed so callers can report it truthfully instead of
+ * collapsing a partial run into `deleted: []`.
+ */
+export class CleanupPartialFailureError extends Error {
+  readonly candidates: CleanupCandidate[];
+  readonly deleted: string[];
+  readonly failed: Array<{ id: string; error: string }>;
+
+  constructor(result: {
+    candidates: CleanupCandidate[];
+    deleted: string[];
+    failed: Array<{ id: string; error: string }>;
+  }) {
+    super(
+      `CLEANUP_PARTIAL_FAILURE: ${result.deleted.length} of ${result.candidates.length} offline devices were deleted, ${result.failed.length} failed: ${result.failed
+        .map((f) => `${f.id}: ${f.error}`)
+        .join("; ")}`,
+    );
+    this.name = "CleanupPartialFailureError";
+    this.candidates = result.candidates;
+    this.deleted = result.deleted;
+    this.failed = result.failed;
+  }
+}
+
 export async function cleanup(
   config: ResolvedConfig,
   options: { dryRun: boolean; yes: boolean; credentialEnvName?: string },
-): Promise<{ candidates: CleanupCandidate[]; deleted: string[] }> {
+): Promise<CleanupResult> {
   const api = new TailscaleApiClient(
     config,
     process.env,
@@ -108,9 +140,22 @@ export async function cleanup(
     );
 
   const deleted: string[] = [];
+  const failed: Array<{ id: string; error: string }> = [];
   for (const candidate of candidates) {
-    await api.deleteDevice(candidate.id);
-    deleted.push(candidate.id);
+    try {
+      await api.deleteDevice(candidate.id);
+      deleted.push(candidate.id);
+    } catch (error) {
+      // Record the failure and keep going: losing the IDs of devices that
+      // were already permanently deleted would make the envelope lie about
+      // what happened to the tailnet.
+      failed.push({
+        id: candidate.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
+  if (failed.length)
+    throw new CleanupPartialFailureError({ candidates, deleted, failed });
   return { candidates, deleted };
 }

@@ -47,6 +47,11 @@ export async function verifyEndpointReachable(
   kind: EndpointKind,
   timeoutSeconds: number,
 ): Promise<EndpointVerification> {
+  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
+    throw new Error(
+      `VERIFY_TIMEOUT_INVALID: expected a positive number of seconds, got ${timeoutSeconds}`,
+    );
+  }
   const deadline = Date.now() + timeoutSeconds * 1000;
   const pending = new Set(ports);
   let attempts = 0;
@@ -56,15 +61,7 @@ export async function verifyEndpointReachable(
       attempts += 1;
       try {
         if (kind === "tls") {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 10_000);
-          const response = await fetch(`https://${hostname}:${port}/`, {
-            method: "HEAD",
-            redirect: "manual",
-            signal: controller.signal,
-          });
-          clearTimeout(timer);
-          void response;
+          await probeTls(hostname, port);
         } else {
           await tcpConnect(hostname, port, 10_000);
         }
@@ -84,4 +81,24 @@ export async function verifyEndpointReachable(
     attempts,
     ...(lastError ? { lastError } : {}),
   };
+}
+
+/**
+ * A HEAD probe bounded by an abort timeout. The timer is always cleared and the
+ * response body always released, otherwise every failed attempt leaks a live
+ * 10s timer that keeps the event loop running.
+ */
+async function probeTls(hostname: string, port: number): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(`https://${hostname}:${port}/`, {
+      method: "HEAD",
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    await response.body?.cancel();
+  } finally {
+    clearTimeout(timer);
+  }
 }

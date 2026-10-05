@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import os from "node:os";
+import { parseHuJson } from "./hujson.js";
 import type { CredentialResolution, Profile, ResolvedConfig } from "./types.js";
 
 const namedCredentialEnv = [
@@ -129,10 +130,10 @@ export function loadConfigFile(
   for (const candidate of candidates) {
     try {
       const raw = readFileSync(candidate, "utf8");
-      const cleaned = raw
-        .replace(/\/\/[^\n]*/g, "")
-        .replace(/,\s*([\]}])/g, "$1");
-      const parsed = JSON.parse(cleaned) as Record<string, unknown>;
+      // parseHuJson is comment- and string-aware; the previous regexes were
+      // not, so a value like "https://example.com" was truncated to
+      // "https:" inside the string literal and still parsed as valid JSON.
+      const parsed = parseHuJson<Record<string, unknown>>(raw);
       if (!parsed.clientSecret && typeof parsed.TS_CLIENT_SECRET === "string")
         parsed.clientSecret = parsed.TS_CLIENT_SECRET;
       return { config: parsed as ConfigFile, source: candidate };
@@ -143,9 +144,31 @@ export function loadConfigFile(
   return undefined;
 }
 
+/** Keyed by `Profile` so adding a profile without listing it here fails to compile. */
+const VALID_PROFILES = {
+  ci: true,
+  container: true,
+  vm: true,
+  windows: true,
+  dev: true,
+  "funnel-app": true,
+  "subnet-router": true,
+  "exit-node": true,
+} as const satisfies Record<Profile, true>;
+
 function profileFromEnvironment(env: NodeJS.ProcessEnv): Profile {
-  const configured = env.TS_PROFILE as Profile | undefined;
-  if (configured) return configured;
+  const configured = env.TS_PROFILE?.trim();
+  if (configured) {
+    // Previously cast unchecked, so TS_PROFILE=prod silently disabled every
+    // profile-conditional behaviour (CI auto-cleanup, exit-node, …).
+    // Object.hasOwn, not `in`: "toString"/"constructor" are inherited keys
+    // and would pass an `in` check.
+    if (!Object.hasOwn(VALID_PROFILES, configured))
+      throw new Error(
+        `PROFILE_INVALID: expected one of ${Object.keys(VALID_PROFILES).join(", ")}, got "${configured}"`,
+      );
+    return configured as Profile;
+  }
   if (env.CI || env.GITHUB_ACTIONS) return "ci";
   if (env.KUBERNETES_SERVICE_HOST || env.CONTAINER) return "container";
   if (process.platform === "win32") return "windows";

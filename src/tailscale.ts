@@ -27,6 +27,31 @@ function parseJson<T>(text: string): T | undefined {
   }
 }
 
+const SECRET_ARG_RE =
+  /^(--(?:auth-key|authkey|api-key|client-secret|token|credential|password)[=])(.*)$/i;
+
+/** Masks secret material embedded in a `tailscale` argv entry. */
+export function redactArgv(args: string[]): string[] {
+  return args.map((arg) => {
+    const match = SECRET_ARG_RE.exec(arg);
+    if (match) return `${match[1]}***`;
+    return arg
+      .replace(/tskey-[A-Za-z0-9._-]{4,}/g, "tskey-***")
+      .replace(/(bearer|basic)\s+[A-Za-z0-9._:-]{8,}/gi, "$1 ***");
+  });
+}
+
+/** Masks `tskey-…` / bearer tokens anywhere in subprocess output. */
+export function sanitizeCommandText(text: string): string {
+  return text
+    .replace(/tskey-[A-Za-z0-9._-]{4,}/g, "tskey-***")
+    .replace(/(bearer|basic)\s+[A-Za-z0-9._:-]{8,}/gi, "$1 ***")
+    .replace(
+      /(--(?:auth-key|authkey|api-key|client-secret|token|credential|password)=)\S+/gi,
+      "$1***",
+    );
+}
+
 export async function findTailscale(
   explicit?: string,
   options: { download?: boolean } = {},
@@ -123,7 +148,10 @@ export class TailscaleLocal {
       const { stdout, stderr } = await execFileAsync(this.bin, commandArgs, {
         timeout: options.timeoutMs ?? 60_000,
         windowsHide: true,
-        env: { ...process.env, ...options.env },
+        // `options.env` is authoritative when supplied: callers pass an
+        // explicitly redacted environment, so merging it over process.env
+        // would resurrect every credential they removed.
+        env: options.env ?? process.env,
         maxBuffer: 8 * 1024 * 1024,
       });
       return { stdout, stderr, code: 0 };
@@ -133,9 +161,14 @@ export class TailscaleLocal {
       if (err instanceof Error && "stderr" in err) {
         const e = err as Error & { stdout?: string; stderr?: string };
         const detail = [e.stdout, e.stderr].filter(Boolean).join("\n").trim();
-        throw new Error(detail || e.message);
+        // Never fall back to err.message: Node builds it as
+        // `Command failed: <file> <argv>`, which embeds `--auth-key=…`.
+        throw new Error(
+          sanitizeCommandText(detail) ||
+            `TAILSCALE_COMMAND_FAILED: ${this.bin} ${redactArgv(commandArgs).join(" ")} exited non-zero`,
+        );
       }
-      throw err;
+      throw new Error(sanitizeCommandText(String(err)));
     }
   }
 

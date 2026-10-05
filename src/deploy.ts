@@ -9,6 +9,7 @@ import { ApiError, TailscaleApiClient } from "./api.js";
 import type { CreatedAuthKey } from "./api.js";
 import { tailscaleVersion, TailscaleLocal } from "./tailscale.js";
 import { cleanup as runCleanup } from "./cleanup.js";
+import { CleanupPartialFailureError } from "./cleanup.js";
 import {
   ensureDeployTags,
   ensureFunnelAccess,
@@ -148,13 +149,28 @@ function deviceFromStatus(status: unknown): Device | Record<string, unknown> {
   return device;
 }
 
-function redactEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+/**
+ * Credential variable names stripped from the environment handed to the
+ * `tailscale up` child: the child only needs socket/host settings, and every
+ * one of these would otherwise be inherited by any process it spawns.
+ */
+const CREDENTIAL_ENV_NAMES = [
+  "TS_API_KEY",
+  "TS_ACCESS_TOKEN",
+  "TS_API_TOKEN",
+  "TS_CLIENT_SECRET",
+  "TS_OAUTH_CLIENT_SECRET",
+  "TS_AUTH_KEY",
+  "TS_TRUST_CREDENTIAL",
+  "TS_API_TRUST",
+  "TAILSCALE_TRUST_CREDENTIAL",
+  "TAILSCALE_API_TRUST",
+] as const;
+
+/** Returns a copy of `env` with every known credential variable removed. */
+export function redactEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const copy = { ...env };
-  delete copy.TS_API_KEY;
-  delete copy.TS_ACCESS_TOKEN;
-  delete copy.TS_CLIENT_SECRET;
-  delete copy.TS_OAUTH_CLIENT_SECRET;
-  delete copy.TS_AUTH_KEY;
+  for (const name of CREDENTIAL_ENV_NAMES) delete copy[name];
   return copy;
 }
 
@@ -535,22 +551,51 @@ export async function deploy(
         "CLEANUP_EXPLICIT: --cleanup was passed, so offline-device pruning runs on this profile (auto-cleanup otherwise only defaults to CI/container)",
       );
     try {
-      const result = await runCleanup(config, {
-        dryRun: false,
-        yes: true,
-        ...(options.credentialEnvName
-          ? { credentialEnvName: options.credentialEnvName }
-          : {}),
-      });
+      const result = await runCleanup(
+        { ...config, tags: resolveTags(config).tags },
+        {
+          dryRun: false,
+          // Never silently pre-approve a destructive delete: without --yes the
+          // user must confirm on a TTY.
+          yes: options.yes,
+          ...(options.credentialEnvName
+            ? { credentialEnvName: options.credentialEnvName }
+            : {}),
+        },
+      );
       return {
         candidates: result.candidates.map((d) => d.id),
         deleted: result.deleted,
       };
-    } catch {
-      warnings.push(
-        "CLEANUP_SKIPPED: no device cleanup permission; deploy succeeded without pruning offline devices",
-      );
-      return { candidates: [], deleted: [], skipped: true };
+    } catch (error) {
+      if (error instanceof CleanupPartialFailureError) {
+        // Devices were permanently deleted — report exactly which ones.
+        warnings.push(`CLEANUP_PARTIAL: ${error.message}`);
+        return {
+          candidates: error.candidates.map((d) => d.id),
+          deleted: error.deleted,
+        };
+      }
+      if (
+        error instanceof ApiError &&
+        (error.status === 401 || error.status === 403)
+      ) {
+        warnings.push(
+          "CLEANUP_SKIPPED: no device cleanup permission; deploy succeeded without pruning offline devices",
+        );
+        return { candidates: [], deleted: [], skipped: true };
+      }
+      // A declined confirmation is not a deploy failure: make it unambiguous
+      // that everything above already happened and nothing was deleted, so the
+      // user does not re-run (and re-apply) the whole deployment.
+      const message = error instanceof Error ? error.message : String(error);
+      if (/^CLEANUP_CONFIRMATION_REQUIRED/.test(message))
+        throw new Error(
+          `${message} — the deployment itself completed, but no device was deleted; re-run with --yes to prune offline devices`,
+        );
+      // Anything else (policy errors, transport failures) must surface rather
+      // than be reported as "no permission".
+      throw error;
     }
   })();
 

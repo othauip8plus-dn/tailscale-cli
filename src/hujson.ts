@@ -7,8 +7,22 @@ function findDelimiterEnd(
   let depth = 0;
   let inString = false;
   let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
   for (let i = openIndex; i < text.length; i += 1) {
     const c = text[i];
+    const next = text[i + 1];
+    if (lineComment) {
+      if (c === "\n") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (c === "*" && next === "/") {
+        blockComment = false;
+        i += 1;
+      }
+      continue;
+    }
     if (inString) {
       if (escaped) {
         escaped = false;
@@ -17,6 +31,16 @@ function findDelimiterEnd(
       } else if (c === '"') {
         inString = false;
       }
+      continue;
+    }
+    if (c === "/" && next === "/") {
+      lineComment = true;
+      i += 1;
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      blockComment = true;
+      i += 1;
       continue;
     }
     if (c === '"') {
@@ -30,6 +54,59 @@ function findDelimiterEnd(
     }
   }
   return -1;
+}
+
+/**
+ * Replaces comment characters with spaces, preserving newlines and therefore
+ * every byte offset of the original text. Strings are left untouched. Used to
+ * locate real code positions (object braces, section keys) in HuJSON without
+ * matching braces or keys that only appear inside comments.
+ */
+export function stripHuJsonComments(raw: string): string {
+  let cleaned = "";
+  let inString = false;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  for (let i = 0; i < raw.length; i += 1) {
+    const c = raw[i]!;
+    const next = raw[i + 1];
+    if (lineComment) {
+      if (c === "\n") {
+        lineComment = false;
+        cleaned += c;
+      } else cleaned += " ";
+      continue;
+    }
+    if (blockComment) {
+      if (c === "*" && next === "/") {
+        blockComment = false;
+        cleaned += "  ";
+        i += 1;
+      } else cleaned += c === "\n" ? "\n" : " ";
+      continue;
+    }
+    if (inString) {
+      cleaned += c;
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === "/" && next === "/") {
+      lineComment = true;
+      cleaned += "  ";
+      i += 1;
+    } else if (c === "/" && next === "*") {
+      blockComment = true;
+      cleaned += "  ";
+      i += 1;
+    } else {
+      cleaned += c;
+      if (c === '"') inString = true;
+    }
+  }
+  return cleaned;
 }
 
 function indentOf(text: string, index: number): string {
@@ -85,53 +162,11 @@ function withTrailingComma(body: string): string {
 export type HuJsonSectionShape = "object" | "array";
 
 export function parseHuJson<T = unknown>(raw: string): T {
-  let cleaned = "";
-  let inString = false;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-  for (let i = 0; i < raw.length; i += 1) {
-    const c = raw[i]!;
-    const next = raw[i + 1];
-    if (lineComment) {
-      if (c === "\n") {
-        lineComment = false;
-        cleaned += c;
-      } else cleaned += " ";
-      continue;
-    }
-    if (blockComment) {
-      if (c === "*" && next === "/") {
-        blockComment = false;
-        cleaned += "  ";
-        i += 1;
-      } else cleaned += c === "\n" ? "\n" : " ";
-      continue;
-    }
-    if (inString) {
-      cleaned += c;
-      if (escaped) escaped = false;
-      else if (c === "\\") escaped = true;
-      else if (c === '"') inString = false;
-      continue;
-    }
-    if (c === "/" && next === "/") {
-      lineComment = true;
-      cleaned += "  ";
-      i += 1;
-    } else if (c === "/" && next === "*") {
-      blockComment = true;
-      cleaned += "  ";
-      i += 1;
-    } else {
-      cleaned += c;
-      if (c === '"') inString = true;
-    }
-  }
+  const cleaned = stripHuJsonComments(raw);
 
   let json = "";
-  inString = false;
-  escaped = false;
+  let inString = false;
+  let escaped = false;
   for (let i = 0; i < cleaned.length; i += 1) {
     const c = cleaned[i]!;
     if (inString) {
@@ -173,7 +208,11 @@ export function ensureHuJsonSection(
     nonEmpty.map((line) => `${indent}${line}`).join(",\n");
 
   const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const keyMatch = new RegExp(`"${escapedKey}"\\s*:[\\s]*([{[])`).exec(raw);
+  // Locate real code positions only: a `"tagOwners": {` that appears inside a
+  // comment must never be treated as the live section, otherwise the merge is
+  // injected into the comment and the remote policy stays unchanged.
+  const code = stripHuJsonComments(raw);
+  const keyMatch = new RegExp(`"${escapedKey}"\\s*:[\\s]*([{[])`).exec(code);
 
   if (keyMatch) {
     const open = keyMatch.index + keyMatch[0].lastIndexOf(openChar);
@@ -194,7 +233,7 @@ export function ensureHuJsonSection(
     return `${raw.slice(0, open + 1)}${separatedBody}${separatedBody.endsWith("\n") ? "" : "\n"}${insert}\n${raw.slice(close)}`;
   }
 
-  const firstOpen = raw.indexOf("{");
+  const firstOpen = code.indexOf("{");
   if (firstOpen === -1) return raw;
   const outerIndent = indentOf(raw, firstOpen);
   const inner = `${outerIndent}  `;
@@ -212,7 +251,9 @@ export function ensureHuJsonKey(
     raw,
     key,
     Object.entries(entries).map(
-      ([name, value]) => `"${name}": ${JSON.stringify(value)}`,
+      // Escape both halves: tag names come from unvalidated TS_TAGS input and
+      // a quote or backslash would otherwise produce broken HuJSON.
+      ([name, value]) => `${JSON.stringify(name)}: ${JSON.stringify(value)}`,
     ),
     "object",
   );

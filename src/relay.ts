@@ -55,6 +55,11 @@ export interface MultiRelayInstance {
   close: () => Promise<void>;
 }
 
+/** A TCP port usable by `server.listen()` / `net.connect()`. */
+export function isValidPort(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 65535;
+}
+
 /**
  * Parse a host:port token that may be a bare IPv4/name, an IPv6 address in
  * [::1] brackets, or a plain "host:port" / "[host]:port" pair.
@@ -143,7 +148,7 @@ export function parseRelayMapping(
         const start = pos;
         while (pos < raw.length && raw[pos] !== ":") pos++;
         const port = Number(raw.slice(start, pos));
-        if (!Number.isFinite(port) || port <= 0 || port > 65535)
+        if (!isValidPort(port))
           throw new Error(
             `RELAY_MAP_INVALID: invalid port after "[${host}]" in "${mapStr}"`,
           );
@@ -159,12 +164,9 @@ export function parseRelayMapping(
       const token = raw.slice(start, pos);
       pos++; // consume colon or EOF
       const num = Number(token);
-      if (
-        Number.isFinite(num) &&
-        num > 0 &&
-        num <= 65535 &&
-        token.trim() !== ""
-      ) {
+      // isValidPort, not a bare range check: "8080.5" is finite and in range
+      // but reaches server.listen()/net.connect() as an opaque EINVAL.
+      if (isValidPort(num) && token.trim() !== "") {
         atoms.push({ kind: "port", value: num });
       } else if (
         token.includes(".") ||
@@ -331,9 +333,11 @@ export function loadRelayConfigFile(filePath: string): RelayMapping[] {
         targetHost = host;
         targetPort = port;
       }
-      if (!Number.isFinite(listenPort) || !Number.isFinite(targetPort)) {
+      // Number.isFinite alone accepts 0, -1, 99999 and 8080.5, which then
+      // reach server.listen / net.connect as an opaque EINVAL.
+      if (!isValidPort(listenPort) || !isValidPort(targetPort)) {
         throw new Error(
-          `RELAY_CONFIG_ITEM_INVALID: invalid listen or target port in ${JSON.stringify(item)}`,
+          `RELAY_CONFIG_ITEM_INVALID: listen and target ports must be integers in 1-65535, got ${listenPort}/${targetPort} in ${JSON.stringify(item)}`,
         );
       }
       mappings.push({
@@ -377,7 +381,10 @@ export function startRelay(options: RelayOptions): Promise<RelayInstance> {
       onError,
     } = options;
 
+    const sockets = new Set<net.Socket>();
     const server = net.createServer((clientSocket) => {
+      sockets.add(clientSocket);
+      clientSocket.once("close", () => sockets.delete(clientSocket));
       const clientAddr = `${clientSocket.remoteAddress ?? "unknown"}:${clientSocket.remotePort ?? 0}`;
       if (onConnection) {
         onConnection(clientAddr);
@@ -448,16 +455,29 @@ export function startRelay(options: RelayOptions): Promise<RelayInstance> {
       });
     });
 
-    server.once("error", (err) => {
+    const onListenError = (err: Error): void => {
       reject(err);
-    });
+    };
+    server.once("error", onListenError);
 
     server.listen(listenPort, listenHost, () => {
+      // The promise is settled now: a later `error` must be reported, not
+      // silently swallowed by a reject() that can no longer take effect
+      // (which would also leave the next `error` unhandled and crash the CLI).
+      server.removeListener("error", onListenError);
+      server.on("error", (err: Error) => {
+        if (onError) onError(err);
+      });
       resolve({
         server,
         close: () =>
           new Promise<void>((res, rej) => {
             server.close((err) => (err ? rej(err) : res()));
+            // `server.close` only stops accepting: the callback waits for every
+            // open connection, and relay clients hold long-lived sessions, so
+            // destroy them explicitly or shutdown hangs after Ctrl+C.
+            for (const socket of sockets) socket.destroy();
+            sockets.clear();
           }),
         connectionsCount: () =>
           new Promise<number>((res, rej) => {

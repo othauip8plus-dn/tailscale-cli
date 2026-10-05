@@ -1,8 +1,13 @@
 import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { TailscaleApiClient } from "./api.js";
+import { basename, join } from "node:path";
+import { ApiError, TailscaleApiClient } from "./api.js";
 import type { PolicySnapshot } from "./api.js";
-import { ensureHuJsonArrayItem, ensureHuJsonKey } from "./hujson.js";
+import {
+  ensureHuJsonArrayItem,
+  ensureHuJsonKey,
+  parseHuJson,
+} from "./hujson.js";
 import type { PolicyDocument, ResolvedConfig } from "./types.js";
 import { confirm } from "./interactive.js";
 
@@ -122,17 +127,61 @@ function normalizeTagsFor(
   return normalized.length ? normalized : ["autogroup:member"];
 }
 
+/**
+ * Renders a policy document as canonical JSON so two representations of the
+ * same policy (raw HuJSON vs. the API's re-serialised JSON) compare equal.
+ * Falls back to the raw text when the input is not parseable.
+ */
+function canonicalizePolicy(text: string): string {
+  try {
+    return JSON.stringify(parseHuJson(text), null, 2);
+  } catch {
+    return text;
+  }
+}
+
+/**
+ * Line diff based on a longest-common-subsequence table. A positional
+ * comparison would report every following line as changed after a single
+ * insertion, which makes the confirmation prompt useless.
+ */
 function simpleDiff(before: string, after: string): string {
   if (before === after) return "";
   const a = before.split(/\r?\n/);
   const b = after.split(/\r?\n/);
-  const lines: string[] = [];
-  const size = Math.max(a.length, b.length);
-  for (let i = 0; i < size; i += 1) {
-    if (a[i] === b[i]) continue;
-    if (a[i] !== undefined) lines.push(`-${a[i]}`);
-    if (b[i] !== undefined) lines.push(`+${b[i]}`);
+  // Guard against quadratic blowup on large policies: the table below holds
+  // one cell per line pair, so cap the product and fall back to a summary that
+  // names the sizes instead of inlining two whole documents in the envelope.
+  if (a.length * b.length > 1_000_000)
+    return `~ policy differs (${a.length} lines -> ${b.length} lines) and is too large to diff line by line; review the file and the remote policy directly`;
+  const lcs: number[][] = Array.from({ length: a.length + 1 }, () =>
+    new Array<number>(b.length + 1).fill(0),
+  );
+  for (let i = a.length - 1; i >= 0; i -= 1) {
+    for (let j = b.length - 1; j >= 0; j -= 1) {
+      const row = lcs[i]!;
+      const next = lcs[i + 1]!;
+      row[j] =
+        a[i] === b[j] ? next[j + 1]! + 1 : Math.max(next[j]!, row[j + 1]!);
+    }
   }
+  const lines: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      i += 1;
+      j += 1;
+    } else if (lcs[i + 1]![j]! >= lcs[i]![j + 1]!) {
+      lines.push(`-${a[i]!}`);
+      i += 1;
+    } else {
+      lines.push(`+${b[j]!}`);
+      j += 1;
+    }
+  }
+  for (; i < a.length; i += 1) lines.push(`-${a[i]!}`);
+  for (; j < b.length; j += 1) lines.push(`+${b[j]!}`);
   return lines.join("\n");
 }
 
@@ -156,7 +205,12 @@ export async function policySync(
     options.credentialEnvName,
   );
   const current = await api.getPolicy();
-  const diff = simpleDiff(current.content, desired);
+  // Compare canonically: `current.content` is re-serialised JSON while `desired`
+  // is the raw file, so a byte comparison never matches for a commented HuJSON
+  // and would report a change on every --dry-run.
+  const canonicalBefore = canonicalizePolicy(current.content);
+  const canonicalAfter = canonicalizePolicy(desired);
+  const diff = simpleDiff(canonicalBefore, canonicalAfter);
   if (!diff)
     return {
       changed: false,
@@ -187,7 +241,7 @@ export async function policySync(
 
   const backupDir = options.backupDir;
   const backup = backupDir
-    ? `${backupDir}/${file.split("/").pop()}.bak`
+    ? join(backupDir, `${basename(file)}.bak`)
     : `${file}.bak`;
   if (backupDir) {
     const { mkdirSync } = await import("node:fs");
@@ -197,11 +251,19 @@ export async function policySync(
       // best-effort
     }
   }
-  await writeFile(backup, current.content, "utf8");
+  // Back up the HuJSON form so comments and formatting survive a rollback.
+  const currentRaw = await api.getPolicyHuJson();
+  await writeFile(backup, currentRaw.content, "utf8");
   await api.updatePolicy(desired, current.etag);
   const verified = await api.getPolicy();
   if (!verified.json)
     throw new Error("POLICY_VERIFY_FAILED: API returned no policy");
+  // Assert the write actually landed: `verified.json` is only checked for
+  // presence otherwise, which can never fail and hides rejected writes.
+  if (canonicalizePolicy(verified.content) !== canonicalAfter)
+    throw new Error(
+      "POLICY_VERIFY_FAILED: the policy read back after the write does not match the requested policy",
+    );
   return {
     changed: true,
     validated: true,
@@ -225,8 +287,22 @@ export async function ensureHttpsEnabled(
   let httpsEnabled: boolean | undefined;
   try {
     httpsEnabled = (await api.getTailnetSettings()).httpsEnabled;
-  } catch {
-    httpsEnabled = undefined;
+  } catch (error) {
+    // Distinguish "cannot read settings" from "HTTPS is off": treating a
+    // transport/permission error as "disabled" turns an accurate 403 into a
+    // confusing PATCH failure further down.
+    if (
+      error instanceof ApiError &&
+      (error.status === 401 || error.status === 403)
+    ) {
+      return {
+        provisioned: false,
+        warnings: [
+          "HTTPS_SETTINGS_UNVERIFIABLE: cannot read tailnet settings with this credential (missing 'all' scope); skipping the HTTPS check",
+        ],
+      };
+    }
+    throw error;
   }
   if (httpsEnabled === true) return { provisioned: false, warnings: [] };
   const approved = await confirm(
