@@ -68,7 +68,16 @@ export function renderPlist(
         `    <key>${xmlEscape(k)}</key>\n    <string>${xmlEscape(v)}</string>`,
     )
     .join("\n");
-  const restart = config.restart.onFailure ? "<true/>" : "<false/>";
+  const keepAlive = config.restart.onFailure
+    ? `  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+`
+    : `  <key>KeepAlive</key>
+  <false/>
+`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -81,12 +90,7 @@ ${programArgs}
   </array>
   <key>WorkingDirectory</key>
   <string>${xmlEscape(config.workingDir)}</string>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    ${restart}
-  </dict>
-  <key>ThrottleInterval</key>
+${keepAlive}  <key>ThrottleInterval</key>
   <integer>${config.restart.delaySeconds}</integer>
   <key>StandardOutPath</key>
   <string>${xmlEscape(opts.outLog)}</string>
@@ -205,10 +209,16 @@ export class MacOSServiceManager implements ServiceManager {
       // Not loaded
       return { name, status: "stopped" };
     }
-    // launchctl list <name> outputs: PID  LastExitStatus  Label
-    const pidMatch = /^\s*(\d+|-)\s/.exec(out);
-    const pid =
-      pidMatch && pidMatch[1] !== "-" ? Number(pidMatch[1]) : undefined;
+    // `launchctl list <label>` prints a plist-style dictionary
+    // (`"PID" = 66410; ...`), not the three-column table of bare
+    // `launchctl list`, so accept both shapes.
+    const dictPid = /"PID"\s*=\s*(\d+)/.exec(out);
+    const tablePid = /^\s*(\d+|-)\s/m.exec(out);
+    const pid = dictPid
+      ? Number(dictPid[1])
+      : tablePid && tablePid[1] !== "-"
+        ? Number(tablePid[1])
+        : undefined;
     const status: ServiceStatus["status"] =
       pid !== undefined && pid > 0 ? "running" : "stopped";
     return { name, status, pid: pid && pid > 0 ? pid : undefined };

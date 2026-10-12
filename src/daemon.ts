@@ -27,6 +27,20 @@ async function tryRun(command: string, args: string[]): Promise<boolean> {
   }
 }
 
+// `sc query <name>` exits 0 whenever the service exists, even when stopped, so
+// the STATE line must be inspected rather than the exit code.
+async function windowsServiceRunning(name: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync("sc", ["query", name], {
+      timeout: 20_000,
+      windowsHide: true,
+    });
+    return /\bRUNNING\b/.test(stdout);
+  } catch {
+    return false;
+  }
+}
+
 async function trySystemctl(args: string[]): Promise<boolean> {
   try {
     const { stdout, stderr } = await execFileAsync("systemctl", args, {
@@ -47,7 +61,7 @@ function sleep(ms: number): Promise<void> {
 
 export async function inspectDaemon(): Promise<DaemonState> {
   if (process.platform === "win32") {
-    const serviceUp = await tryRun("sc", ["query", "Tailscale"]);
+    const serviceUp = await windowsServiceRunning("Tailscale");
     if (serviceUp) return { running: true, warnings: [], actions: [] };
     return {
       running: false,

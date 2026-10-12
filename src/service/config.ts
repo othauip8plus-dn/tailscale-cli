@@ -13,6 +13,12 @@ const NAME_RE = /^[a-zA-Z0-9-]+$/;
 const SECRET_VALUE_RE =
   /tskey-|secret|token|password|passwd|api[_-]?key|credential/i;
 
+// Secret env vars are frequently named after what they hold (e.g.
+// `PGPASSWORD=hunter2`) rather than carrying a recognisable value, so masking
+// must consider the key as well as the value.
+const SECRET_KEY_RE =
+  /password|passwd|secret|token|api[_-]?key|credential|auth[_-]?key/i;
+
 const DEFAULT_RESTART: ServiceRestartPolicy = {
   onFailure: true,
   delaySeconds: 5,
@@ -216,7 +222,8 @@ export function resolveUserName(user: string): string {
 export function maskEnv(env: Record<string, string>): Record<string, string> {
   const masked: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
-    masked[key] = SECRET_VALUE_RE.test(value) ? "****" : value;
+    masked[key] =
+      SECRET_KEY_RE.test(key) || SECRET_VALUE_RE.test(value) ? "****" : value;
   }
   return masked;
 }

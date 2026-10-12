@@ -192,6 +192,7 @@ program.action(
         return;
       } catch (error) {
         fail("opencode", error, start);
+        return;
       }
     }
     try {

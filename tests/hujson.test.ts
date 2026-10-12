@@ -90,6 +90,39 @@ describe("ensureHuJsonKey", () => {
       raw,
     );
   });
+
+  it("ignores braces inside comments when locating the section end", () => {
+    const raw = `{
+  // the closing brace below is only a comment: }
+  "tagOwners": {
+    "tag:ci": ["tag:admin"], // stays }
+  },
+  "autoApprovers": { "route": ["tag:ci"] },
+}`;
+    const merged = ensureHuJsonKey(raw, "tagOwners", {
+      "tag:build": ["tag:admin"],
+    });
+    expect(merged).toContain("// the closing brace below is only a comment: }");
+    expect(merged).toContain("// stays }");
+    expect(parseHuJson(merged)).toEqual({
+      tagOwners: { "tag:ci": ["tag:admin"], "tag:build": ["tag:admin"] },
+      autoApprovers: { route: ["tag:ci"] },
+    });
+  });
+
+  it("does not match a key that only appears inside a comment", () => {
+    const raw = `{
+  // "tagOwners": {}
+  "autoApprovers": {}
+}`;
+    const merged = ensureHuJsonKey(raw, "tagOwners", {
+      "tag:a": ["tag:admin"],
+    });
+    const parsed = parseHuJson(merged) as {
+      tagOwners: Record<string, string[]>;
+    };
+    expect(parsed.tagOwners).toEqual({ "tag:a": ["tag:admin"] });
+  });
 });
 
 describe("ensureHuJsonArrayItem", () => {

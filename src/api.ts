@@ -103,9 +103,10 @@ export class TailscaleApiClient {
       : env.TS_CLIENT_SECRET?.trim();
     this.config = config;
 
-    if (accessToken) this.auth = { source: "bearer", token: accessToken };
-    else if (apiKey) this.auth = { source: "basic", token: apiKey };
-    else if (trustCredential) {
+    // Match resolveAuth()'s documented precedence: an explicit trust
+    // credential (or OAuth client pair) outranks a bearer token/API key, so an
+    // operator-selected credential is never silently shadowed.
+    if (trustCredential) {
       if (trustCredential.startsWith("tskey-client-")) {
         const parsed = parseTrustCredential(trustCredential);
         this.auth = parsed
@@ -134,6 +135,8 @@ export class TailscaleApiClient {
       }
     } else if (clientId && clientSecret)
       this.auth = { source: "oauth", clientId, clientSecret };
+    else if (accessToken) this.auth = { source: "bearer", token: accessToken };
+    else if (apiKey) this.auth = { source: "basic", token: apiKey };
     else this.auth = { source: "bearer" };
   }
 
@@ -248,10 +251,13 @@ export class TailscaleApiClient {
               status: response.status,
             };
           const contentType = response.headers.get("content-type") ?? "";
+          // `application/hujson` also contains the substring "json", so match
+          // the structured-suffix form explicitly instead of includes("json").
+          const isJson = /^application\/(?:[a-z0-9.+-]*\+)?json\b/i.test(
+            contentType,
+          );
           return {
-            data: contentType.includes("json")
-              ? parseHuJson<T>(text)
-              : (text as T),
+            data: isJson ? parseHuJson<T>(text) : (text as T),
             headers: response.headers,
             status: response.status,
           };

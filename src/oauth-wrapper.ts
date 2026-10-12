@@ -1,5 +1,5 @@
 import http from "node:http";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { URL } from "node:url";
 
 export interface OAuthWrapperOptions {
@@ -21,6 +21,11 @@ interface IssuedCode {
 
 function s256(verifier: string): string {
   return createHash("sha256").update(verifier).digest("base64url");
+}
+
+/** Cryptographically strong opaque token for codes and refresh tokens. */
+function randomToken(): string {
+  return randomBytes(32).toString("base64url");
 }
 
 export function startOAuthWrapper(
@@ -194,9 +199,7 @@ export function startOAuthWrapper(
       );
       return;
     }
-    const code =
-      Math.random().toString(36).slice(2, 12) +
-      Math.random().toString(36).slice(2, 12);
+    const code = randomToken();
     codes.set(code, {
       challenge: codeChallenge,
       clientId: clientIdParam,
@@ -258,9 +261,7 @@ export function startOAuthWrapper(
         }
         json(res, {
           access_token: token,
-          refresh_token:
-            Math.random().toString(36).slice(2) +
-            Math.random().toString(36).slice(2),
+          refresh_token: randomToken(),
           token_type: "Bearer",
           expires_in: 3600,
           scope: "mcp.read mcp.write offline_access",
@@ -271,9 +272,7 @@ export function startOAuthWrapper(
       if (grant === "client_credentials" || grant === "refresh_token") {
         json(res, {
           access_token: token,
-          refresh_token:
-            Math.random().toString(36).slice(2) +
-            Math.random().toString(36).slice(2),
+          refresh_token: randomToken(),
           token_type: "Bearer",
           expires_in: 3600,
           scope: "mcp.read mcp.write offline_access",
