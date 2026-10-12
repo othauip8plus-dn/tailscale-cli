@@ -117,3 +117,57 @@ describe("MagicDNS preferences contract", () => {
     await expect(client.enableMagicDns()).rejects.toThrow("DNS_VERIFY_FAILED");
   });
 });
+
+describe("API credential precedence", () => {
+  it("uses an explicit trust credential instead of a shadowing bearer token", async () => {
+    const urls: string[] = [];
+    const auths: (string | null)[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        urls.push(url);
+        auths.push(new Headers(init?.headers).get("authorization"));
+        if (url.includes("/oauth/token"))
+          return jsonResponse({
+            access_token: "oauth-access-token",
+            expires_in: 3600,
+          });
+        return jsonResponse({ acls: [] });
+      }),
+    );
+
+    const client = new TailscaleApiClient(testConfig, {
+      TS_CLIENT_SECRET:
+        "tskey-client-k522tBdJ5D21CNTRL-abcdefghijklmnopqrstuvwxyz123456",
+      TS_ACCESS_TOKEN: "tskey-access-token-should-not-win",
+    });
+    await client.getPolicy();
+
+    expect(urls[0]).toContain("/oauth/token");
+    expect(auths[0]).toMatch(/^Basic /);
+  });
+});
+
+describe("HuJSON response handling", () => {
+  it("preserves the raw HuJSON text (comments included) for policy writes", async () => {
+    const raw = '{\n  // keep me\n  "tagOwners": {}\n}';
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(raw, {
+            status: 200,
+            headers: { "content-type": "application/hujson", etag: '"e1"' },
+          }),
+      ),
+    );
+
+    const client = new TailscaleApiClient(testConfig, {
+      TS_API_KEY: "tskey-api-key-value",
+    });
+    const result = await client.getPolicyHuJson();
+    expect(result.content).toBe(raw);
+    expect(result.etag).toBe('"e1"');
+  });
+});

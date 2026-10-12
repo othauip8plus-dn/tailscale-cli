@@ -257,6 +257,18 @@ describe("exposure parsing", () => {
     });
   });
 
+  it("keeps the whole target when it contains an '=' (query string)", () => {
+    expect(parseExposure("https://example.com/?x=443")).toEqual({
+      target: "https://example.com/?x=443",
+      public: false,
+    });
+    expect(parseExposure("8443=https://example.com/path?q=1")).toEqual({
+      target: "https://example.com/path?q=1",
+      public: false,
+      https: 8443,
+    });
+  });
+
   it("rejects invalid public ports", () => {
     expect(() => parseExposure("0=8443")).toThrow("EXPOSE_INVALID_PUBLIC_PORT");
     expect(() => parseExposure("70000=8443")).toThrow(

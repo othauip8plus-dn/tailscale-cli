@@ -38,6 +38,58 @@ function indentOf(text: string, index: number): string {
   return match ? match[0] : "";
 }
 
+/**
+ * Replace every character inside a line or block comment with a space,
+ * preserving string contents and the overall length/offsets. Delimiters and
+ * key names inside comments must not influence section lookup or brace
+ * counting, otherwise a comment like `// closes? }` corrupts the merge.
+ */
+function maskComments(text: string): string {
+  const out = text.split("");
+  let inString = false;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i]!;
+    const next = text[i + 1];
+    if (lineComment) {
+      if (c === "\n") lineComment = false;
+      else out[i] = " ";
+      continue;
+    }
+    if (blockComment) {
+      if (c === "*" && next === "/") {
+        out[i] = " ";
+        out[i + 1] = " ";
+        blockComment = false;
+        i += 1;
+      } else if (c !== "\n") out[i] = " ";
+      continue;
+    }
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === "/" && next === "/") {
+      out[i] = " ";
+      out[i + 1] = " ";
+      lineComment = true;
+      i += 1;
+    } else if (c === "/" && next === "*") {
+      out[i] = " ";
+      out[i + 1] = " ";
+      blockComment = true;
+      i += 1;
+    } else if (c === '"') {
+      inString = true;
+    }
+  }
+  return out.join("");
+}
+
 function withTrailingComma(body: string): string {
   let inString = false;
   let escaped = false;
@@ -173,12 +225,13 @@ export function ensureHuJsonSection(
     nonEmpty.map((line) => `${indent}${line}`).join(",\n");
 
   const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const keyMatch = new RegExp(`"${escapedKey}"\\s*:[\\s]*([{[])`).exec(raw);
+  const masked = maskComments(raw);
+  const keyMatch = new RegExp(`"${escapedKey}"\\s*:[\\s]*([{[])`).exec(masked);
 
   if (keyMatch) {
     const open = keyMatch.index + keyMatch[0].lastIndexOf(openChar);
     if (open === -1) return raw;
-    const close = findDelimiterEnd(raw, open, openChar, closeChar);
+    const close = findDelimiterEnd(masked, open, openChar, closeChar);
     if (close === -1) return raw;
     const body = raw.slice(open + 1, close);
     const closingIndent = indentOf(raw, close);

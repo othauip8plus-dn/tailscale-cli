@@ -69,8 +69,17 @@ function normalizeTag(tag: string): string {
 }
 
 export function parseExposure(value: string): Exposure {
-  const eq = value.trim().split("=", 2);
-  const [publicPartRaw, rawPath] = (eq[0] ?? "").split("#", 2);
+  const trimmed = value.trim();
+  // Public-spec syntax is `[port][#path]=<target>`. A target URL may itself
+  // contain `=`, so only treat the first `=` as the separator when the text
+  // before it is a valid port/path spec.
+  const eqIndex = trimmed.indexOf("=");
+  const hasPublicSpec =
+    eqIndex !== -1 && /^\d*(?:#.*)?$/.test(trimmed.slice(0, eqIndex));
+  const spec = hasPublicSpec ? trimmed.slice(0, eqIndex) : trimmed;
+  const targetText = hasPublicSpec ? trimmed.slice(eqIndex + 1) : undefined;
+
+  const [publicPartRaw, rawPath] = spec.split("#", 2);
   const publicPart = publicPartRaw ?? "";
   const path = rawPath
     ? rawPath.startsWith("/")
@@ -83,7 +92,7 @@ export function parseExposure(value: string): Exposure {
     if (!Number.isInteger(publicPort) || publicPort < 1 || publicPort > 65535)
       throw new Error(`EXPOSE_INVALID_PUBLIC_PORT: ${publicPart.trim()}`);
   }
-  const normalized = (eq.length === 2 ? (eq[1] ?? "") : publicPart).trim();
+  const normalized = (targetText ?? publicPart).trim();
   let target: string;
 
   if (/^\d+$/.test(normalized)) target = `http://127.0.0.1:${normalized}`;
@@ -151,10 +160,18 @@ function deviceFromStatus(status: unknown): Device | Record<string, unknown> {
 function redactEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const copy = { ...env };
   delete copy.TS_API_KEY;
+  delete copy.TS_API_TOKEN;
   delete copy.TS_ACCESS_TOKEN;
   delete copy.TS_CLIENT_SECRET;
   delete copy.TS_OAUTH_CLIENT_SECRET;
   delete copy.TS_AUTH_KEY;
+  delete copy.TS_TRUST_CREDENTIAL;
+  delete copy.TS_API_TRUST;
+  delete copy.TAILSCALE_TRUST_CREDENTIAL;
+  delete copy.TAILSCALE_API_TRUST;
+  const named = copy.TS_CREDENTIAL_ENV?.trim();
+  if (named) delete copy[named];
+  delete copy.TS_CREDENTIAL_ENV;
   return copy;
 }
 
@@ -535,13 +552,16 @@ export async function deploy(
         "CLEANUP_EXPLICIT: --cleanup was passed, so offline-device pruning runs on this profile (auto-cleanup otherwise only defaults to CI/container)",
       );
     try {
-      const result = await runCleanup(config, {
-        dryRun: false,
-        yes: true,
-        ...(options.credentialEnvName
-          ? { credentialEnvName: options.credentialEnvName }
-          : {}),
-      });
+      const result = await runCleanup(
+        { ...config, tags },
+        {
+          dryRun: false,
+          yes: true,
+          ...(options.credentialEnvName
+            ? { credentialEnvName: options.credentialEnvName }
+            : {}),
+        },
+      );
       return {
         candidates: result.candidates.map((d) => d.id),
         deleted: result.deleted,

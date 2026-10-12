@@ -107,6 +107,12 @@ describe("service config", () => {
     expect(masked.TS_CLIENT_SECRET).toBe("****");
   });
 
+  it("masks secret-named keys even when the value looks opaque", () => {
+    const masked = maskEnv({ NODE_ENV: "production", PGPASSWORD: "hunter2" });
+    expect(masked.NODE_ENV).toBe("production");
+    expect(masked.PGPASSWORD).toBe("****");
+  });
+
   it("throws SERVICE_CONFIG_NOT_FOUND for a missing file", () => {
     expect(() => loadServiceConfig(`${tmpDir}/missing.json`)).toThrow(
       /SERVICE_CONFIG_NOT_FOUND/,
